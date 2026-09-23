@@ -16,7 +16,6 @@ type Cartridge struct {
 	CHRROM []byte
 	Mapper uint8
 	Mirror uint8
-	IsSample1 bool // sample1.nes検出フラグ
 }
 
 func LoadCartridge(filename string) (*Cartridge, error) {
@@ -74,7 +73,6 @@ func LoadCartridge(filename string) (*Cartridge, error) {
 		CHRROM:    chrROM,
 		Mapper:    mapper,
 		Mirror:    mirror,
-		IsSample1: detectSample1ROM(data),
 	}, nil
 }
 
@@ -112,20 +110,4 @@ func (c *Cartridge) PPURead(addr uint16) uint8 {
 
 func (c *Cartridge) PPUWrite(addr uint16, data uint8) {
 	// CHR-ROM is read-only
-}
-
-// detectSample1ROM はsample1.nesを検出する
-func detectSample1ROM(data []byte) bool {
-	// "HELLO, WORLD!"文字列がオフセット0x71にあることを確認
-	helloWorldOffset := 0x71
-	expectedString := "HELLO, WORLD!"
-	
-	// データサイズチェック
-	if len(data) < helloWorldOffset+len(expectedString) {
-		return false
-	}
-	
-	// 文字列比較
-	actualString := string(data[helloWorldOffset : helloWorldOffset+len(expectedString)])
-	return actualString == expectedString
 }

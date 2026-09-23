@@ -750,15 +750,6 @@ type PPU struct {
 	// Name tables (4 * 1KB each, but only 2KB physical memory due to mirroring)
 	tblName [2][1024]uint8
 	// Pattern tables (stored in cartridge CHR-ROM)
-	
-	// Alphabet text display system (Task 3)
-	alphabetPatternGen *AlphabetPatternGenerator // Pattern generator for alphabet characters
-	textDisplayEnabled bool                      // Flag to enable text display system
-	
-	// Character 'A' display scheduling (Task 4)
-	characterAScheduled       bool // Flag to track if character 'A' display has been scheduled
-	scheduleScrollReset       bool // Flag to schedule scroll reset for proper positioning
-	scheduleCharacterAPlacement bool // Flag to schedule dynamic character 'A' placement
 
 	// Registers
 	ctrl    uint8 // $2000 - PPUCTRL
@@ -902,15 +893,6 @@ func NewPPU() *PPU {
 		spriteEvaluator: NewSpriteEvaluator(),
 		spriteRenderer:  NewSpriteRenderer(),
 
-		// Initialize alphabet text display system (Task 3)
-		alphabetPatternGen: NewAlphabetPatternGenerator(),
-		textDisplayEnabled: false, // Disabled by default
-		
-		// Initialize character 'A' display scheduling (Task 4)
-		characterAScheduled:         false,
-		scheduleScrollReset:         false,
-		scheduleCharacterAPlacement: false,
-
 		// Legacy compatibility
 		cycle: 0,
 
@@ -938,17 +920,6 @@ func NewPPU() *PPU {
 
 func (ppu *PPU) ConnectCartridge(cart *cartridge.Cartridge) {
 	ppu.cart = cart
-	
-	// Enable text display system for sample1.nes (Task 3)
-	if cart.IsSample1 {
-		ppu.textDisplayEnabled = true
-		fmt.Printf("Text display system enabled for sample1.nes\n")
-		
-		// Task 4: Automatically display character 'A' at position (0,0) after initialization
-		ppu.scheduleCharacterADisplay()
-	} else {
-		ppu.textDisplayEnabled = false
-	}
 }
 
 func (ppu *PPU) CPURead(addr uint16) uint8 {
@@ -1009,12 +980,6 @@ func (ppu *PPU) CPUWrite(addr uint16, data uint8) {
 
 	switch addr {
 	case PPUCTRL:
-		// Debug: Log mid-frame control changes (potential raster effects)
-		if ppu.scanline >= 0 && ppu.scanline <= 239 && ppu.dot >= 1 && ppu.dot <= 256 {
-			fmt.Printf("Mid-frame PPUCTRL: scanline %d, dot %d, value $%02X\n", 
-				ppu.scanline, ppu.dot, data)
-		}
-		
 		ppu.ctrl = data
 
 		// Update nametable bits in temporary address (t register)
@@ -1038,12 +1003,6 @@ func (ppu *PPU) CPUWrite(addr uint16, data uint8) {
 	case OAMDATA:
 		ppu.OAM[ppu.oamAddr] = data
 	case PPUSCROLL:
-		// Debug: Log mid-frame scroll changes (potential raster effects)
-		if ppu.scanline >= 0 && ppu.scanline <= 239 && ppu.dot >= 1 && ppu.dot <= 256 {
-			fmt.Printf("Mid-frame PPUSCROLL: scanline %d, dot %d, value $%02X\n", 
-				ppu.scanline, ppu.dot, data)
-		}
-		
 		if !ppu.vramAddress.GetWriteToggle() {
 			// First write - X scroll
 			ppu.vramAddress.SetFineX(data & 0x07)                                 // Fine X (3 bits)
@@ -1101,14 +1060,6 @@ func (ppu *PPU) ppuRead(addr uint16) uint8 {
 	addr &= 0x3FFF
 
 	if addr >= 0x0000 && addr <= 0x1FFF {
-		// Pattern table - check for alphabet character intercept first (Task 3)
-		if ppu.textDisplayEnabled {
-			interceptedData, intercepted := ppu.interceptAlphabetPattern(addr)
-			if intercepted {
-				return interceptedData
-			}
-		}
-		
 		// Pattern table - read from cartridge
 		return ppu.cart.PPURead(addr)
 	} else if addr >= 0x2000 && addr <= 0x3EFF {
@@ -1177,51 +1128,6 @@ func (ppu *PPU) ppuRead(addr uint16) uint8 {
 	}
 
 	return 0x00
-}
-
-// interceptAlphabetPattern intercepts pattern table reads for alphabet characters (Task 3)
-// Returns pattern data and boolean indicating if intercept occurred
-func (ppu *PPU) interceptAlphabetPattern(addr uint16) (uint8, bool) {
-	// Only intercept if text display is enabled
-	if !ppu.textDisplayEnabled {
-		return 0x00, false
-	}
-	
-	// Calculate tile index from pattern table address
-	// Pattern table layout: tile_index * 16 + fine_y (+ 8 for high plane)
-	tileIndex := (addr & 0x0FF0) >> 4
-	fineY := addr & 0x0007
-	isHighPlane := (addr & 0x0008) != 0
-	
-	// Check if this is character 'A' (tile index 0x41)
-	if tileIndex == 0x41 {
-		// Get pattern data for character 'A'
-		pattern, exists := ppu.alphabetPatternGen.GetPatternData('A')
-		if !exists {
-			fmt.Printf("Pattern for 'A' not found in alphabet generator\n")
-			return 0x00, false
-		}
-		
-		// Return appropriate byte based on plane and fine Y
-		var byteIndex int
-		if isHighPlane {
-			byteIndex = int(fineY) + 8 // High plane (bytes 8-15)
-		} else {
-			byteIndex = int(fineY)     // Low plane (bytes 0-7)
-		}
-		
-		if byteIndex < 16 {
-			data := pattern[byteIndex]
-			// Minimal logging for pattern intercept
-			if ppu.frameCount == 1 && fineY == 0 && !isHighPlane {
-				fmt.Printf("Pattern intercept active for character 'A'\n")
-			}
-			return data, true
-		}
-	}
-	
-	// No intercept occurred
-	return 0x00, false
 }
 
 func (ppu *PPU) ppuWrite(addr uint16, data uint8) {
@@ -1389,18 +1295,6 @@ func (ppu *PPU) clockVisible() {
 				ppu.spriteRenderer.LoadSprites(ppu, &ppu.spriteEvaluator, nextScanline)
 			}
 		}
-		
-		// Debug: Check if character 'A' is still in buffer after rendering scanline 10
-		if ppu.textDisplayEnabled && ppu.scanline == 10 && ppu.dot == 340 {
-			fmt.Printf("Screen buffer top-left after scanline 10 rendering:\n")
-			for row := 0; row < 3; row++ {
-				fmt.Printf("Row %d: ", row)
-				for col := 0; col < 8; col++ {
-					fmt.Printf("0x%02X ", ppu.sprScreen[row][col])
-				}
-				fmt.Printf("\n")
-			}
-		}
 	} else if ppu.dot >= 321 && ppu.dot <= 336 {
 		// Next scanline tile prefetch
 		if ppu.renderingEnabled {
@@ -1426,34 +1320,13 @@ func (ppu *PPU) clockVBlank() {
 		
 		// Task 9.1.4: Apply pending nametable writes during VBlank
 		if len(ppu.pendingNametableWrites) > 0 {
-			fmt.Printf("Applying %d pending nametable writes during VBlank\n", len(ppu.pendingNametableWrites))
 			for _, write := range ppu.pendingNametableWrites {
 				// Apply the deferred write now
 				ppu.applyNametableWrite(write.addr, write.data)
-				
-				// Log character 'A' display specifically (Task 4)
-				if write.addr == 0x2000 && write.data == 0x41 {
-					fmt.Printf("Character 'A' (tile 0x41) successfully displayed at position (0,0)\n")
-				} else if write.addr == 0x3F00 {
-					fmt.Printf("Universal background color set to 0x%02X\n", write.data)
-				} else if write.addr == 0x3F01 {
-					fmt.Printf("Background palette 0, color 1 set to 0x%02X\n", write.data)
-				}
 			}
 			
 			// Clear pending writes
 			ppu.pendingNametableWrites = nil
-		}
-		
-		// Apply dynamic character 'A' placement if scheduled (Task 4)
-		if ppu.scheduleCharacterAPlacement {
-			fmt.Printf("Applying direct screen buffer approach for character 'A' display\n")
-			
-			// Direct approach: Force character 'A' pattern into screen buffer at position (0,0)
-			// This bypasses all PPU rendering issues and ensures visibility
-			ppu.forceCharacterAToScreen()
-			
-			ppu.scheduleCharacterAPlacement = false
 		}
 	}
 }
@@ -1705,8 +1578,7 @@ func (ppu *PPU) GetPaletteRaw() *[32]uint8 {
 func (ppu *PPU) OAMDMA(page uint8, cpuRam []uint8) {
 	// Transfer 256 bytes from $XX00-$XXFF to OAM
 	baseAddr := uint16(page) << 8
-	fmt.Printf("OAMDMA: Transferring from page $%02X00 to OAM\n", page)
-	
+
 	for i := 0; i < 256; i++ {
 		// Handle memory mirroring for RAM access
 		srcAddr := baseAddr + uint16(i)
@@ -1722,29 +1594,6 @@ func (ppu *PPU) OAMDMA(page uint8, cpuRam []uint8) {
 		}
 
 		ppu.OAM[i] = data
-	}
-	
-	// Debug: Print first few sprites if any are non-zero
-	hasSprites := false
-	for i := 0; i < 64; i++ {
-		spriteY := ppu.OAM[i*4]
-		tileIndex := ppu.OAM[i*4+1]
-		attributes := ppu.OAM[i*4+2]
-		spriteX := ppu.OAM[i*4+3]
-		
-		if spriteY != 0 || tileIndex != 0 || attributes != 0 || spriteX != 0 {
-			if !hasSprites {
-				fmt.Printf("Active sprites found:\n")
-				hasSprites = true
-			}
-			if i < 8 { // Only print first 8 sprites
-				fmt.Printf("  Sprite %d: Y=%d, Tile=$%02X, Attr=$%02X, X=%d\n", 
-					i, spriteY, tileIndex, attributes, spriteX)
-			}
-		}
-	}
-	if !hasSprites {
-		fmt.Printf("No active sprites found in OAM\n")
 	}
 }
 
@@ -2157,158 +2006,5 @@ func (ppu *PPU) applyNametableWrite(fullAddr uint16, data uint8) {
 				ppu.tblName[1][index] = data
 			}
 		}
-	}
-}
-
-// scheduleCharacterADisplay schedules character 'A' to be displayed at position (0,0)
-// This will be applied during the next VBlank period for safe timing (Task 4)
-func (ppu *PPU) scheduleCharacterADisplay() {
-	if !ppu.textDisplayEnabled || ppu.characterAScheduled {
-		return
-	}
-	
-	// Simple approach: Place character 'A' at nametable 0, position (0,0)
-	ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-		addr: 0x2000, // Nametable 0, position (0,0)
-		data: 0x41,   // Tile index for character 'A'
-	})
-	
-	// Also schedule basic palette setup for visibility
-	// Set universal background color (palette index 0) to black
-	ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-		addr: 0x3F00, // Universal background color
-		data: 0x0F,   // Black color
-	})
-	
-	// Set background palette 0, color 1 to white for character 'A'
-	ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-		addr: 0x3F01, // Background palette 0, color 1
-		data: 0x30,   // White color
-	})
-	
-	// Set background palette 0, color 3 to white as well (for solid color)
-	ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-		addr: 0x3F03, // Background palette 0, color 3
-		data: 0x30,   // White color
-	})
-	
-	ppu.characterAScheduled = true
-	fmt.Printf("Scheduled character 'A' display at nametable 0, position (0,0) with tile index 0x41\n")
-}
-
-// forceCharacterAToScreen directly writes character 'A' pattern to screen buffer
-// This is a debugging method to ensure character 'A' is visible at screen position (0,0)
-func (ppu *PPU) forceCharacterAToScreen() {
-	fmt.Printf("forceCharacterAToScreen called! textDisplayEnabled=%t\n", ppu.textDisplayEnabled)
-	
-	if !ppu.textDisplayEnabled {
-		fmt.Printf("Text display not enabled, returning\n")
-		return
-	}
-	
-	// Get pattern data for character 'A'
-	pattern, exists := ppu.alphabetPatternGen.GetPatternData('A')
-	if !exists {
-		fmt.Printf("Pattern for 'A' not found\n")
-		return
-	}
-	
-	// Extract pattern planes
-	plane0 := pattern[0:8]  // Low plane (bit 0)
-	plane1 := pattern[8:16] // High plane (bit 1)
-	
-	// Apply palette settings immediately before drawing
-	ppu.tblPalette[0] = 0x0F // Black background
-	ppu.tblPalette[1] = 0x30 // White for character 'A'
-	ppu.tblPalette[3] = 0x30 // White for character 'A' (solid color)
-	
-	// Get colors from palette for character 'A'
-	whiteColor := ppu.tblPalette[1] // Use palette index 1 (should be white from our setup)
-	blackColor := ppu.tblPalette[0] // Use palette index 0 (background color)
-	
-	fmt.Printf("Force character 'A' colors: white=0x%02X, black=0x%02X\n", whiteColor, blackColor)
-	
-	// Draw 8x8 character 'A' at screen position (0,0)
-	for row := 0; row < 8; row++ {
-		for col := 0; col < 8; col++ {
-			bit := 7 - col
-			bit0 := (plane0[row] >> bit) & 1
-			bit1 := (plane1[row] >> bit) & 1
-			
-			// Combine bits to get pixel value (0-3)
-			pixel := bit1<<1 | bit0
-			
-			// Set color based on pixel value
-			var color uint8
-			if pixel == 0 {
-				color = blackColor // Transparent/background
-			} else {
-				color = whiteColor // Character pixel
-			}
-			
-			// Write directly to screen buffer at position (col, row)
-			if row < 240 && col < 256 {
-				ppu.sprScreen[row][col] = color
-			}
-		}
-	}
-	
-	fmt.Printf("Character 'A' forced to screen buffer at position (0,0)\n")
-	
-	// Debug: Dump top-left corner of screen buffer to verify 'A' is there
-	fmt.Printf("Screen buffer top-left 8x8 area after forcing 'A':\n")
-	for row := 0; row < 8; row++ {
-		fmt.Printf("Row %d: ", row)
-		for col := 0; col < 8; col++ {
-			fmt.Printf("0x%02X ", ppu.sprScreen[row][col])
-		}
-		fmt.Printf("\n")
-	}
-}
-
-// DisplayCharacterAt displays a character at the specified tile position (Task 4)
-// This method provides VBlank-safe nametable updates
-func (ppu *PPU) DisplayCharacterAt(x, y int, char rune) {
-	if !ppu.textDisplayEnabled {
-		fmt.Printf("Text display system not enabled\n")
-		return
-	}
-	
-	// Validate coordinates
-	if x < 0 || x >= 32 || y < 0 || y >= 30 {
-		fmt.Printf("Invalid tile coordinates: (%d, %d)\n", x, y)
-		return
-	}
-	
-	// Get tile index for character
-	var tileIndex uint8
-	if char >= 'A' && char <= 'Z' {
-		tileIndex = uint8(char) // ASCII values 0x41-0x5A
-	} else if char >= 'a' && char <= 'z' {
-		tileIndex = uint8(char) // ASCII values 0x61-0x7A
-	} else {
-		fmt.Printf("Unsupported character: %c\n", char)
-		return
-	}
-	
-	// Calculate nametable address
-	nametableAddr := uint16(0x2000 + y*32 + x)
-	
-	// Check if we're in rendering period - if so, schedule for VBlank
-	isRenderingPeriod := (ppu.scanline >= 0 && ppu.scanline <= 239)
-	
-	if isRenderingPeriod {
-		// Schedule for VBlank period
-		ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-			addr: nametableAddr,
-			data: tileIndex,
-		})
-		fmt.Printf("Scheduled character '%c' (tile 0x%02X) at position (%d,%d) for VBlank update\n", 
-			char, tileIndex, x, y)
-	} else {
-		// Safe to write immediately (during VBlank or pre-render)
-		ppu.applyNametableWrite(nametableAddr, tileIndex)
-		fmt.Printf("Immediately displayed character '%c' (tile 0x%02X) at position (%d,%d)\n", 
-			char, tileIndex, x, y)
 	}
 }
