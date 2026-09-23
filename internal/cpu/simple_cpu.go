@@ -1030,86 +1030,22 @@ func (cpu *CPU) needsPageCrossingCheck(opcode uint8) bool {
 
 // willCrossPage checks if the current instruction will cross a page boundary
 func (cpu *CPU) willCrossPage(opcode uint8) bool {
-	// For this specific test case, we know the specific addresses and can hardcode the logic
-	// D980  11 33     ORA ($33),Y = 0400 @ 0400 = AA should cross page boundary
+	var base, index uint16
 	switch opcode {
-	case 0xB1: // LDA (zp),Y
-		// Check if we're at the specific instructions where page crossing occurs
-		if cpu.PC == 0xD940 {
-			// At 0xD940: Y=34, ZP=$97 contains FFFF, so FFFF + 34 = 0033, page crosses
-			return true // This instruction crosses page boundary
-		}
-		if cpu.PC == 0xD959 {
-			// At 0xD959: Y=FF, ZP=$FF contains 0146, so 0146 + FF = 0245, page crosses
-			return true // This instruction crosses page boundary
-		}
-		return false
-	case 0x11: // ORA (zp),Y
-		// Check if we're at the specific D980 instruction where page crossing occurs
-		if cpu.PC == 0xD980 {
-			// At 0xD980: Y=00, ZP=$33 contains 0400, so 0400 + 00 = 0400, no page cross
-			return false // For this specific case at D980, there's no page crossing
-		}
-		return false
-	case 0x31: // AND (zp),Y
-		return false
-	case 0x51: // EOR (zp),Y
-		return false
-	case 0x71: // ADC (zp),Y
-		return false
-	case 0xBD: // LDA abs,X
-		// Check specific instruction at E387 where page crossing occurs
-		if cpu.PC == 0xE387 {
-			// At E387: X=8A, base=$05FF, effective=$0689, page crosses ($05 -> $06)
-			return true
-		}
-		return false
-	case 0xB9: // LDA abs,Y
-		return false
-	// 3-byte unofficial NOP abs,X instructions
-	case 0x1C: // *NOP abs,X
-		// Check specific instruction at C6F2 where page crossing may occur
-		if cpu.PC == 0xC6F2 {
-			// At C6F2: base=$A9A9, X varies
-			// When X=97: A9A9 + 97 = AA40, page crosses (A9 -> AA)
-			// When X=00: A9A9 + 00 = A9A9, no page cross
-			base := uint16(0xA9A9)
-			effective := base + uint16(cpu.X)
-			return (base >> 8) != (effective >> 8) // Check if page crossed
-		}
-		return false
-	case 0x3C, 0x5C, 0x7C, 0xDC, 0xFC: // Other 3-byte unofficial NOP abs,X
-		// Check if page crossing occurs for these instructions too
-		if cpu.PC >= 0xC6F2 && cpu.PC <= 0xC701 {
-			// Same pattern as 0x1C: base=$A9A9, X varies
-			base := uint16(0xA9A9)
-			effective := base + uint16(cpu.X)
-			return (base >> 8) != (effective >> 8) // Check if page crossed
-		}
-		return false
-	case 0xBC: // LDY abs,X
-		// Check specific instruction at E1E4 where page crossing occurs
-		if cpu.PC == 0xE1E4 {
-			// At E1E4: X=8A, base=$05FF, effective=$0689, page crosses ($05 -> $06)
-			return true
-		}
-		return false
-	case 0xBE: // LDX abs,Y
-		// Check specific instruction at E502 where page crossing occurs
-		if cpu.PC == 0xE502 {
-			// At E502: Y=FF, base=$0580, effective=$067F, page crosses ($05 -> $06)
-			return true
-		}
-		return false
-	case 0xB3: // LAX ($zp),Y
-		// Check specific instruction at E652 where page crossing occurs
-		if cpu.PC == 0xE652 {
-			// At E652: Y=81, ZP=$43 contains 04FF, so 04FF + 81 = 0580, page crosses ($04 -> $05)
-			return true
-		}
+	case 0xBD, 0xBC, 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC: // abs,X
+		base = uint16(cpu.Read(cpu.PC+2))<<8 | uint16(cpu.Read(cpu.PC+1))
+		index = uint16(cpu.X)
+	case 0xBE: // abs,Y
+		base = uint16(cpu.Read(cpu.PC+2))<<8 | uint16(cpu.Read(cpu.PC+1))
+		index = uint16(cpu.Y)
+	case 0xB1, 0x11, 0x31, 0x51, 0x71, 0xD1, 0xF1, 0xB3: // (zp),Y
+		zp := uint16(cpu.Read(cpu.PC + 1))
+		base = uint16(cpu.Read((zp+1)&0xFF))<<8 | uint16(cpu.Read(zp))
+		index = uint16(cpu.Y)
+	default:
 		return false
 	}
-	return false
+	return base&0xFF00 != (base+index)&0xFF00
 }
 
 // Check if branch was taken by comparing PC values
