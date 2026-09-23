@@ -464,120 +464,6 @@ func (cpu *CPU) setupInstructionTable() {
 	}
 }
 
-// Simplified execute method
-func (cpu *CPU) executeInstruction(opcode uint8) {
-	switch opcode {
-	case 0x00: // BRK
-		// Break instruction - for now just halt
-		cpu.PC += 2 // BRK is a 2-byte instruction
-		// In a real implementation, this would trigger an interrupt
-	case 0x20: // JSR (Jump to Subroutine)
-		cpu.PC++
-		lo := uint16(cpu.Read(cpu.PC))
-		cpu.PC++
-		hi := uint16(cpu.Read(cpu.PC))
-		target := (hi << 8) | lo
-		
-		// Push return address to stack (PC-1)
-		returnAddr := cpu.PC
-		cpu.Write(0x0100+uint16(cpu.SP), uint8(returnAddr>>8))
-		cpu.SP--
-		cpu.Write(0x0100+uint16(cpu.SP), uint8(returnAddr&0xFF))
-		cpu.SP--
-		
-		cpu.PC = target
-	case 0x60: // RTS (Return from Subroutine)
-		cpu.SP++
-		lo := uint16(cpu.Read(0x0100 + uint16(cpu.SP)))
-		cpu.SP++
-		hi := uint16(cpu.Read(0x0100 + uint16(cpu.SP)))
-		cpu.PC = (hi << 8) | lo
-	case 0x78: // SEI
-		cpu.SetFlag(I, true)
-		cpu.PC++
-	case 0xA2: // LDX #
-		cpu.PC++
-		cpu.X = cpu.Read(cpu.PC)
-		cpu.SetFlag(Z, cpu.X == 0x00)
-		cpu.SetFlag(N, cpu.X&0x80 != 0)
-		cpu.PC++
-	case 0x9A: // TXS
-		cpu.SP = cpu.X
-		cpu.PC++
-	case 0xA9: // LDA #
-		cpu.PC++
-		cpu.A = cpu.Read(cpu.PC)
-		cpu.SetFlag(Z, cpu.A == 0x00)
-		cpu.SetFlag(N, cpu.A&0x80 != 0)
-		cpu.PC++
-	case 0x8D: // STA abs
-		cpu.PC++
-		lo := uint16(cpu.Read(cpu.PC))
-		cpu.PC++
-		hi := uint16(cpu.Read(cpu.PC))
-		addr := (hi << 8) | lo
-		cpu.Write(addr, cpu.A)
-		cpu.PC++
-	case 0x4C: // JMP abs
-		cpu.PC++
-		lo := uint16(cpu.Read(cpu.PC))
-		cpu.PC++
-		hi := uint16(cpu.Read(cpu.PC))
-		cpu.PC = (hi << 8) | lo
-	case 0xD0: // BNE
-		cpu.PC++
-		offset := int8(cpu.Read(cpu.PC))
-		cpu.PC++
-		if cpu.GetFlag(Z) == 0 {
-			cpu.PC = uint16(int32(cpu.PC) + int32(offset))
-		}
-	case 0xF0: // BEQ
-		cpu.PC++
-		offset := int8(cpu.Read(cpu.PC))
-		cpu.PC++
-		if cpu.GetFlag(Z) == 1 {
-			cpu.PC = uint16(int32(cpu.PC) + int32(offset))
-		}
-	case 0xE8: // INX
-		cpu.X++
-		cpu.SetFlag(Z, cpu.X == 0x00)
-		cpu.SetFlag(N, cpu.X&0x80 != 0)
-		cpu.PC++
-	case 0xCA: // DEX
-		cpu.X--
-		cpu.SetFlag(Z, cpu.X == 0x00)
-		cpu.SetFlag(N, cpu.X&0x80 != 0)
-		cpu.PC++
-	case 0xBD: // LDA abs,X
-		cpu.PC++
-		lo := uint16(cpu.Read(cpu.PC))
-		cpu.PC++
-		hi := uint16(cpu.Read(cpu.PC))
-		addr := ((hi << 8) | lo) + uint16(cpu.X)
-		cpu.A = cpu.Read(addr)
-		cpu.SetFlag(Z, cpu.A == 0x00)
-		cpu.SetFlag(N, cpu.A&0x80 != 0)
-		cpu.PC++
-	case 0x88: // DEY
-		cpu.Y--
-		cpu.SetFlag(Z, cpu.Y == 0x00)
-		cpu.SetFlag(N, cpu.Y&0x80 != 0)
-		cpu.PC++
-	case 0xA0: // LDY #
-		cpu.PC++
-		cpu.Y = cpu.Read(cpu.PC)
-		cpu.SetFlag(Z, cpu.Y == 0x00)
-		cpu.SetFlag(N, cpu.Y&0x80 != 0)
-		cpu.PC++
-	case 0xEA: // NOP
-		// Do nothing
-		cpu.PC++
-	default:
-		// Unknown instruction - treat as NOP
-		cpu.PC++ // Skip unknown instruction
-	}
-}
-
 // Override the Clock method to use enhanced execution
 func (cpu *CPU) Clock() {
 	if cpu.cycles == 0 {
@@ -616,13 +502,7 @@ func (cpu *CPU) Clock() {
 		
 		cpu.logInstruction(opcode, ppuCycleForLog, cpuCycleAfterInstruction)
 		
-		// Try enhanced instruction set first
-		if cpu.isEnhancedInstruction(opcode) {
-			cpu.executeInstructionEnhanced(opcode)
-		} else {
-			// Fall back to simple instruction set
-			cpu.executeInstruction(opcode)
-		}
+		cpu.executeInstructionEnhanced(opcode)
 		
 		// PLA timing adjustment is handled in logging phase
 		
@@ -630,82 +510,6 @@ func (cpu *CPU) Clock() {
 	}
 	cpu.cycles--
 	cpu.totalCycles++
-}
-
-// Check if instruction is in enhanced set
-func (cpu *CPU) isEnhancedInstruction(opcode uint8) bool {
-	enhancedOpcodes := []uint8{
-		0x00, // BRK
-		0x04, // *NOP zp - Unofficial instruction (2 bytes)
-		0x44, // *NOP zp - Unofficial instruction (2 bytes)
-		0x64, // *NOP zp - Unofficial instruction (2 bytes)
-		0x0C, // *NOP abs - Unofficial instruction (3 bytes)
-		0x14, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0x34, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0x54, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0x74, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0xD4, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0xF4, // *NOP zp,X - Unofficial instruction (2 bytes)
-		0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xFA, // 1-byte unofficial NOP instructions
-		0x80, // *NOP #imm - 2-byte unofficial NOP instruction
-		0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC, // 3-byte unofficial NOP abs,X instructions
-		0x20, // JSR abs
-		0x40, 0x4C, 0x60, 0x6C, // RTI, JMP, RTS variants
-		0x24, 0x2C, // BIT zp, BIT abs
-		0xA5, 0xB5, 0xAD, 0xBD, 0xB9, 0xA1, 0xB1, // LDA variants
-		0xA6, 0xB6, 0xAE, 0xBE, // LDX variants  
-		0xA0, 0xA4, 0xB4, 0xAC, 0xBC, // LDY variants
-		0x85, 0x95, 0x8D, 0x9D, 0x99, 0x81, 0x91, // STA variants
-		0x86, 0x96, 0x8E, // STX variants
-		0x84, 0x94, 0x8C, // STY variants
-		0x18, 0x38, 0x58, 0xB8, 0xD8, 0xF8, // Flag operations
-		0xAA, 0xA8, 0x8A, 0x98, 0xBA, // Register transfers
-		0x48, 0x68, 0x08, 0x28, // Stack operations
-		0xC8, // INY
-		0x69, 0x6D, 0x65, 0xE9, 0xE5, 0x75, 0xF5, 0xE1, 0x61, 0xED, 0xF1, 0xF9, 0xFD, 0xEB, // ADC, SBC instructions
-		0xC9, 0xC5, 0xD5, 0xCD, 0xDD, 0xD9, 0xE0, 0xE4, 0xEC, 0xC0, 0xC4, 0xCC, 0xC1, 0xD1, // CMP, CPX, CPY instructions
-		0x29, 0x25, 0x35, 0x2D, 0x3D, 0x39, 0x05, 0x15, 0x09, 0x0D, 0x1D, 0x19, 0x49, 0x45, 0x55, 0x4D, 0x5D, 0x59, 0x41, 0x01, 0x11, 0x21, 0x31, 0x51, 0x71, 0x7D, 0x79, // AND, ORA, EOR, ADC instructions
-		0x0A, 0x4A, 0x2A, 0x6A, // Shift/Rotate A instructions
-		0x06, 0x46, 0x26, 0x66, // Shift/Rotate zp instructions
-		0x16, 0x56, 0x36, 0x76, // Shift/Rotate zp,X instructions
-		0x0E, 0x4E, 0x2E, 0x6E, // Shift/Rotate abs instructions
-		0x1E, 0x5E, 0x3E, 0x7E, // Shift/Rotate abs,X instructions
-		0xE6, 0xC6, // INC/DEC zp instructions
-		0xF6, 0xD6, // INC/DEC zp,X instructions
-		0xEE, 0xCE, // INC/DEC abs instructions
-		0xFE, 0xDE, // INC/DEC abs,X instructions
-		0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0, // All branch instructions
-		0x33, // RLA ($zp),Y - Unofficial instruction
-		// LAX (LDA + LDX) - Unofficial instruction variants
-		0xA3, 0xA7, 0xAF, 0xB3, 0xB7, 0xBF,
-		// SAX (STA and STX: A & X) - Unofficial instruction  
-		0x83, 0x87, 0x8F, 0x97,
-		// DCP (Decrement and Compare) - Unofficial instruction
-		0xC3, 0xC7, 0xCF, 0xD3, 0xD7, 0xDB, 0xDF,
-		// ISB (Increment and Subtract with Borrow) - Unofficial instruction
-		0xE3, 0xE7, 0xEF, 0xF3, 0xF7, 0xFB, 0xFF,
-		// SLO (Shift Left and OR) - Unofficial instruction
-		0x03, 0x07, 0x0F, 0x13, 0x17, 0x1B, 0x1F,
-		// RLA (Rotate Left and AND) - Unofficial instruction
-		0x23, 0x27, 0x2F, 0x37, 0x3B, 0x3F, // RLA all addressing modes
-		// SRE (Shift Right and EOR) - Unofficial instruction
-		0x43, 0x47, 0x4F, 0x53, 0x57, 0x5B, 0x5F, // SRE all addressing modes
-		// RRA (Rotate Right and ADC) - Unofficial instruction
-		0x63, // RRA ($zp,X)
-		0x67, // RRA $zp
-		0x6F, // RRA $abs
-		0x73, // RRA ($zp),Y
-		0x77, // RRA $zp,X
-		0x7B, // RRA $abs,Y
-		0x7F, // RRA $abs,X
-	}
-	
-	for _, enhanced := range enhancedOpcodes {
-		if opcode == enhanced {
-			return true
-		}
-	}
-	return false
 }
 
 // getInstructionCycles returns the accurate cycle count for each 6502 instruction
