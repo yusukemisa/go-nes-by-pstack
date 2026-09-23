@@ -1,19 +1,34 @@
 # go-nes-by-pstack
 
-Go NES emulator. Mapper 0, nestest-checked CPU, PPU frame to a PPM from `cmd/nes`.
+Mapper 0 の NES エミュレータです。CPU は nestest のログと照合します。画面は `cmd/nes` のウィンドウです。
 
-## Prove it
+## 動かし方
+
+ウィンドウを開きます。Z が A、X が B、矢印が十字キー、Enter が START、Shift が SELECT です。Escape かウィンドウを閉じると終わります。
 
 ```
-go test ./internal/nes/ -count=1
-go run ./cmd/nes testdata/nestest.nes 2
+go run ./cmd/nes path/to/game.nes
 ```
 
-## Layout
+`frame.ppm` だけ書くときは `-ppm` を付けます。フレーム数の既定は 2 です。nestest はほとんど描画しないので、画像はほぼ黒です。
 
-- `internal/nes` Console
-- `internal/cpu` 6502
-- `internal/ppu` PPU
-- `internal/bus` CPU map
-- `internal/cartridge` iNES
-- `design/HANDOFF.md` 次セッション向けの現状と未着手
+```
+go run ./cmd/nes -ppm testdata/nestest.nes 1
+```
+
+テストに CGO は要りません。
+
+```
+CGO_ENABLED=0 go test ./internal/nes/ -count=1
+```
+
+## 構成
+
+- `internal/nes` が `Console`
+- `internal/cpu` が 6502
+- `internal/ppu` が PPU
+- `internal/bus` が CPU のメモリマップ
+- `internal/cartridge` が iNES
+- `cmd/nes` が SDL ウィンドウ
+
+マッパー 0 以外と APU の音はまだありません。
