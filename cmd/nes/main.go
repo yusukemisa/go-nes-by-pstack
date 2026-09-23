@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -9,18 +10,29 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("usage: nes <rom.nes> [frames]")
+	ppm := flag.Bool("ppm", false, "run headless and write frame.ppm")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		log.Fatal("usage: nes <rom.nes> | nes -ppm <rom.nes> [frames]")
 	}
-	frames := 2
-	if len(os.Args) >= 3 {
-		fmt.Sscanf(os.Args[2], "%d", &frames)
-	}
-	c, err := nes.Open(os.Args[1])
+	c, err := nes.Open(args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
 	c.Reset()
+
+	if !*ppm {
+		if err := runWindow(c); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	frames := 2
+	if len(args) >= 2 {
+		fmt.Sscanf(args[1], "%d", &frames)
+	}
 	fmt.Printf("reset PC=$%04X first=$%02X\n", c.CPU.PC, c.Bus.CPURead(c.CPU.PC))
 	for i := 0; i < frames; i++ {
 		c.StepFrame()
