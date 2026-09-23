@@ -514,7 +514,7 @@ func (cpu *CPU) Clock() {
 
 // getInstructionCycles returns the accurate cycle count for each 6502 instruction
 func (cpu *CPU) getInstructionCycles(opcode uint8) uint8 {
-	cycles := cpu.getBaseCycles(opcode)
+	cycles := baseCycles[opcode]
 	
 	// Check for page boundary crossing for specific instructions
 	if cpu.needsPageCrossingCheck(opcode) {
@@ -526,261 +526,24 @@ func (cpu *CPU) getInstructionCycles(opcode uint8) uint8 {
 	return cycles
 }
 
-// getBaseCycles returns the base cycle count without page crossing
-func (cpu *CPU) getBaseCycles(opcode uint8) uint8 {
-	switch opcode {
-	case 0x00: return 7 // BRK
-	case 0x04: return 3 // *NOP zp - Unofficial (reads operand)
-	case 0x44: return 3 // *NOP zp - Unofficial (reads operand)
-	case 0x64: return 3 // *NOP zp - Unofficial (reads operand)
-	case 0x0C: return 4 // *NOP abs - Unofficial (reads operand)
-	case 0x14: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0x34: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0x54: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0x74: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0xD4: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0xF4: return 4 // *NOP zp,X - Unofficial (reads operand)
-	case 0x1A: return 2 // *NOP - 1-byte unofficial NOP
-	case 0x3A: return 2 // *NOP - 1-byte unofficial NOP
-	case 0x5A: return 2 // *NOP - 1-byte unofficial NOP
-	case 0x7A: return 2 // *NOP - 1-byte unofficial NOP
-	case 0xDA: return 2 // *NOP - 1-byte unofficial NOP
-	case 0xFA: return 2 // *NOP - 1-byte unofficial NOP
-	case 0x80: return 2 // *NOP #imm - 2-byte unofficial NOP
-	case 0x1C: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	case 0x3C: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	case 0x5C: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	case 0x7C: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	case 0xDC: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	case 0xFC: return 4 // *NOP abs,X - 3-byte unofficial NOP (can add cycle if page crossed)
-	// LAX (LDA + LDX) - Unofficial instruction cycle counts
-	case 0xA3: return 6 // LAX ($zp,X) - Same as LDA ($zp,X)
-	case 0xA7: return 3 // LAX $zp - Same as LDA $zp
-	case 0xAF: return 4 // LAX $abs - Same as LDA $abs
-	case 0xB3: return 5 // LAX ($zp),Y - Same as LDA ($zp),Y (can add cycle if page crossed)
-	case 0xB7: return 4 // LAX $zp,Y - Same as LDA $zp,Y
-	case 0xBF: return 4 // LAX $abs,Y - Same as LDA $abs,Y (can add cycle if page crossed)
-	
-	// SAX (STA and STX) - Unofficial instruction
-	case 0x83: return 6 // SAX ($zp,X) - Same as STA ($zp,X)
-	case 0x87: return 3 // SAX $zp - Same as STA $zp
-	case 0x8F: return 4 // SAX $abs - Same as STA $abs
-	case 0x97: return 4 // SAX $zp,Y - Same as STA $zp,Y
-	
-	case 0x24: return 3 // BIT zp
-	case 0x2C: return 4 // BIT abs
-	case 0x4C: return 3 // JMP abs
-	case 0x6C: return 5 // JMP ($addr)
-	case 0x20: return 6 // JSR abs
-	case 0x60: return 6 // RTS
-	case 0x40: return 6 // RTI
-	case 0xA2: return 2 // LDX #
-	case 0xA0: return 2 // LDY #
-	case 0xA9: return 2 // LDA #
-	case 0x86: return 3 // STX zp
-	case 0x84: return 3 // STY zp
-	case 0x85: return 3 // STA zp
-	case 0xEA: return 2 // NOP
-	case 0x78: return 2 // SEI
-	case 0x38: return 2 // SEC
-	case 0x18: return 2 // CLC
-	case 0x58: return 2 // CLI
-	case 0xB8: return 2 // CLV
-	case 0xD8: return 2 // CLD
-	case 0xF8: return 2 // SED
-	case 0x48: return 3 // PHA
-	case 0x68: return 4 // PLA
-	case 0x08: return 3 // PHP
-	case 0x28: return 4 // PLP
-	case 0xAA: return 2 // TAX
-	case 0xA8: return 2 // TAY
-	case 0x8A: return 2 // TXA
-	case 0x98: return 2 // TYA
-	case 0x9A: return 2 // TXS
-	case 0xBA: return 2 // TSX
-	case 0xE8: return 2 // INX
-	case 0xC8: return 2 // INY
-	case 0xCA: return 2 // DEX
-	case 0x88: return 2 // DEY
-	case 0x65: return 3 // ADC zp
-	case 0x69: return 2 // ADC #
-	case 0x6D: return 4 // ADC abs
-	case 0x7D: return 4 // ADC abs,X (base cycles, +1 if page crossed)
-	case 0x79: return 4 // ADC abs,Y (base cycles, +1 if page crossed)
-	case 0xE9: return 2 // SBC #
-	case 0xEB: return 2 // *SBC # (unofficial)
-	
-	// DCP (Decrement and Compare) - Unofficial
-	case 0xC3: return 8 // *DCP ($zp,X)
-	case 0xC7: return 5 // *DCP $zp
-	case 0xCF: return 6 // *DCP $abs
-	case 0xD3: return 8 // *DCP ($zp),Y
-	case 0xD7: return 6 // *DCP $zp,X
-	case 0xDB: return 7 // *DCP $abs,Y
-	case 0xDF: return 7 // *DCP $abs,X
-	
-	case 0xE5: return 3 // SBC zp
-	case 0xED: return 4 // SBC abs
-	case 0xFD: return 4 // SBC abs,X (base cycles, +1 if page crossed)
-	case 0xF9: return 4 // SBC abs,Y (base cycles, +1 if page crossed)
-	case 0x75: return 4 // ADC zp,X
-	case 0xF5: return 4 // SBC zp,X
-	case 0xC9: return 2 // CMP #
-	case 0xC5: return 3 // CMP zp
-	case 0xD5: return 4 // CMP zp,X
-	case 0xCD: return 4 // CMP abs
-	case 0xDD: return 4 // CMP abs,X (base cycles, +1 if page crossed)
-	case 0xD9: return 4 // CMP abs,Y (base cycles, +1 if page crossed)
-	case 0xC1: return 6 // CMP (zp,X)
-	case 0xD1: return 5 // CMP ($zp),Y
-	case 0xE0: return 2 // CPX #
-	case 0xE4: return 3 // CPX zp
-	case 0xEC: return 4 // CPX abs
-	case 0xC0: return 2 // CPY #
-	case 0xC4: return 3 // CPY zp
-	case 0xCC: return 4 // CPY abs
-	case 0x01: return 6 // ORA ($zp,X)
-	case 0x11: return 5 // ORA ($zp),Y
-	case 0x31: return 5 // AND ($zp),Y
-	case 0x51: return 5 // EOR ($zp),Y
-	case 0x71: return 5 // ADC ($zp),Y
-	case 0x21: return 6 // AND ($zp,X)
-	case 0x25: return 3 // AND zp
-	case 0x35: return 4 // AND zp,X
-	case 0x61: return 6 // ADC ($zp,X)
-	case 0xE1: return 6 // SBC ($zp,X)
-	case 0xF1: return 5 // SBC ($zp),Y
-	case 0x29: return 2 // AND #
-	case 0x05: return 3 // ORA zp
-	case 0x15: return 4 // ORA zp,X
-	case 0x09: return 2 // ORA #
-	case 0x0D: return 4 // ORA abs
-	case 0x19: return 4 // ORA abs,Y (base cycles, +1 if page crossed)
-	case 0x1D: return 4 // ORA abs,X (base cycles, +1 if page crossed)
-	case 0x2D: return 4 // AND abs
-	case 0x3D: return 4 // AND abs,X (base cycles, +1 if page crossed)
-	case 0x39: return 4 // AND abs,Y (base cycles, +1 if page crossed)
-	case 0x49: return 2 // EOR #
-	case 0x4D: return 4 // EOR abs
-	case 0x5D: return 4 // EOR abs,X (base cycles, +1 if page crossed)
-	case 0x59: return 4 // EOR abs,Y (base cycles, +1 if page crossed)
-	case 0x41: return 6 // EOR (zp,X)
-	case 0x45: return 3 // EOR zp
-	case 0x55: return 4 // EOR zp,X
-	// Shift/Rotate instructions
-	case 0x0A: return 2 // ASL A
-	case 0x4A: return 2 // LSR A
-	case 0x2A: return 2 // ROL A
-	case 0x6A: return 2 // ROR A
-	case 0x06: return 5 // ASL zp
-	case 0x46: return 5 // LSR zp
-	case 0x26: return 5 // ROL zp
-	case 0x66: return 5 // ROR zp
-	case 0x16: return 6 // ASL zp,X
-	case 0x56: return 6 // LSR zp,X
-	case 0x36: return 6 // ROL zp,X
-	case 0x76: return 6 // ROR zp,X
-	case 0xE6: return 5 // INC zp
-	case 0xC6: return 5 // DEC zp
-	case 0xF6: return 6 // INC zp,X
-	case 0xD6: return 6 // DEC zp,X
-	case 0xEE: return 6 // INC abs
-	case 0xCE: return 6 // DEC abs
-	case 0x0E: return 6 // ASL abs
-	case 0x4E: return 6 // LSR abs
-	case 0x2E: return 6 // ROL abs
-	case 0x6E: return 6 // ROR abs
-	case 0x1E: return 7 // ASL abs,X
-	case 0x5E: return 7 // LSR abs,X
-	case 0x3E: return 7 // ROL abs,X
-	case 0x7E: return 7 // ROR abs,X
-	case 0xFE: return 7 // INC abs,X
-	case 0xDE: return 7 // DEC abs,X
-	// Load instructions
-	case 0xA5: return 3 // LDA zp
-	case 0xB5: return 4 // LDA zp,X
-	case 0xAD: return 4 // LDA abs
-	case 0xBD: return 4 // LDA abs,X (+1 if page crossed)
-	case 0xB9: return 4 // LDA abs,Y (+1 if page crossed)
-	case 0xA1: return 6 // LDA (zp,X)
-	case 0xB1: return 5 // LDA (zp),Y (+1 if page crossed)
-	case 0xA6: return 3 // LDX zp
-	case 0xB6: return 4 // LDX zp,Y
-	case 0xAE: return 4 // LDX abs
-	case 0xBE: return 4 // LDX abs,Y (+1 if page crossed)
-	case 0xA4: return 3 // LDY zp
-	case 0xB4: return 4 // LDY zp,X
-	case 0xAC: return 4 // LDY abs
-	case 0xBC: return 4 // LDY abs,X (+1 if page crossed)
-	// Store instructions
-	case 0x95: return 4 // STA zp,X
-	case 0x8D: return 4 // STA abs
-	case 0x9D: return 5 // STA abs,X
-	case 0x99: return 5 // STA abs,Y
-	case 0x81: return 6 // STA (zp,X)
-	case 0x91: return 6 // STA (zp),Y
-	case 0x96: return 4 // STX zp,Y
-	case 0x8E: return 4 // STX abs
-	case 0x94: return 4 // STY zp,X
-	case 0x8C: return 4 // STY abs
-	// Branch instructions
-	case 0xB0: return 2 // BCS (base cycles, +1 if branch taken, +1 if page crossed)
-	case 0x10: return 2 // BPL 
-	case 0x30: return 2 // BMI
-	case 0x50: return 2 // BVC
-	case 0x70: return 2 // BVS
-	case 0x90: return 2 // BCC
-	case 0xD0: return 2 // BNE
-	case 0xF0: return 2 // BEQ
-	// Unofficial instructions
-	case 0x33: return 8 // RLA ($zp),Y
-	
-	// ISB (Increment and Subtract with Borrow) - Unofficial instruction
-	case 0xE3: return 8 // ISB ($zp,X)
-	case 0xE7: return 5 // ISB $zp
-	case 0xEF: return 6 // ISB $abs
-	case 0xF3: return 8 // ISB ($zp),Y
-	case 0xF7: return 6 // ISB $zp,X
-	case 0xFB: return 7 // ISB $abs,Y
-	case 0xFF: return 7 // ISB $abs,X
-	
-	// SLO (Shift Left and OR) - Unofficial instruction
-	case 0x03: return 8 // SLO ($zp,X)
-	case 0x07: return 5 // SLO $zp
-	case 0x0F: return 6 // SLO $abs
-	case 0x13: return 8 // SLO ($zp),Y
-	case 0x17: return 6 // SLO $zp,X
-	case 0x1B: return 7 // SLO $abs,Y
-	case 0x1F: return 7 // SLO $abs,X
-	
-	// RLA (Rotate Left and AND) - Unofficial instruction
-	case 0x23: return 8 // RLA ($zp,X)
-	case 0x27: return 5 // RLA $zp
-	case 0x2F: return 6 // RLA $abs
-	case 0x37: return 6 // RLA $zp,X
-	case 0x3B: return 7 // RLA $abs,Y
-	case 0x3F: return 7 // RLA $abs,X
-	
-	// SRE (Shift Right and EOR) - Unofficial instruction
-	case 0x43: return 8 // SRE ($zp,X)
-	case 0x47: return 5 // SRE $zp
-	case 0x4F: return 6 // SRE $abs
-	case 0x53: return 8 // SRE ($zp),Y
-	case 0x57: return 6 // SRE $zp,X
-	case 0x5B: return 7 // SRE $abs,Y
-	case 0x5F: return 7 // SRE $abs,X
-	
-	// RRA (Rotate Right and ADC) - Unofficial instruction
-	case 0x63: return 8 // RRA ($zp,X)
-	case 0x67: return 5 // RRA $zp
-	case 0x6F: return 6 // RRA $abs
-	case 0x73: return 8 // RRA ($zp),Y
-	case 0x77: return 6 // RRA $zp,X
-	case 0x7B: return 7 // RRA $abs,Y
-	case 0x7F: return 7 // RRA $abs,X
-	
-	default: return 2   // Default for unknown instructions
-	}
+// baseCycles is the cycle count per opcode before page-crossing extras.
+var baseCycles = [256]uint8{
+	7, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6, // 0x00
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x10
+	6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 4, 4, 6, 6, // 0x20
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x30
+	6, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 3, 4, 6, 6, // 0x40
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x50
+	6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 6, // 0x60
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x70
+	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0x80
+	2, 6, 2, 2, 4, 4, 4, 4, 2, 5, 2, 2, 2, 5, 2, 2, // 0x90
+	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0xA0
+	2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 2, 4, 4, 4, 4, // 0xB0
+	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xC0
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0xD0
+	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xE0
+	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0xF0
 }
 
 // Check if instruction is a branch instruction
