@@ -1,7 +1,5 @@
 package cpu
 
-import "fmt"
-
 type CPU struct {
 	// Registers
 	A      uint8  // Accumulator
@@ -17,22 +15,12 @@ type CPU struct {
 	// Cycle tracking
 	cycles uint8
 	totalCycles uint64
-
-	// Instruction lookup table
-	lookup []Instruction
 }
 
 type Bus interface {
 	CPURead(addr uint16) uint8
 	CPUWrite(addr uint16, data uint8)
 	GetPPUCycles() (int, int16, uint16)
-}
-
-type Instruction struct {
-	Name     string
-	Operate  func(*CPU) uint8
-	AddrMode func(*CPU) uint8
-	Cycles   uint8
 }
 
 // Status flags
@@ -56,7 +44,6 @@ func NewCPU() *CPU {
 		SP:     0xFD,
 		Status: 0x00 | U,
 	}
-	cpu.setupInstructionTable()
 	return cpu
 }
 
@@ -165,29 +152,6 @@ func (cpu *CPU) GetTotalCycles() uint64 {
 
 func (cpu *CPU) GetCycles() uint8 {
 	return cpu.cycles
-}
-
-func (cpu *CPU) Disassemble(nStart, nStop uint16) map[uint16]string {
-	mapLines := make(map[uint16]string)
-	addr := nStart
-
-	for addr <= nStop {
-		lineAddr := addr
-		sInst := fmt.Sprintf("$%04X: ", addr)
-		opcode := cpu.bus.CPURead(addr)
-		addr++
-		sInst += cpu.lookup[opcode].Name
-		mapLines[lineAddr] = sInst
-		
-		// Skip operand bytes (simplified)
-		if opcode == 0x20 || opcode == 0x4C { // JSR, JMP absolute
-			addr += 2
-		} else if opcode >= 0x10 && opcode <= 0x70 && (opcode&0x0F) == 0x00 { // Branch instructions
-			addr += 1
-		}
-	}
-
-	return mapLines
 }
 
 func (cpu *CPU) SetTotalCycles(cycles uint64) {

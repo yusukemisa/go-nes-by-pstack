@@ -449,21 +449,6 @@ func (cpu *CPU) disassembleInstruction(opcode, byte2, byte3 uint8) string {
 	}
 }
 
-func (cpu *CPU) setupInstructionTable() {
-	// Create a simple lookup table without function pointers
-	cpu.lookup = make([]Instruction, 256)
-	
-	// Initialize all as NOP
-	for i := 0; i < 256; i++ {
-		cpu.lookup[i] = Instruction{
-			Name:     "NOP",
-			Operate:  nil,
-			AddrMode: nil,
-			Cycles:   2,
-		}
-	}
-}
-
 // Override the Clock method to use enhanced execution
 func (cpu *CPU) Clock() {
 	if cpu.cycles == 0 {
