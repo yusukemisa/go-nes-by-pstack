@@ -961,13 +961,11 @@ func (ppu *PPU) CPURead(addr uint16) uint8 {
 			data = ppu.dataBuffer
 		}
 
-		// TEMP FIX: 二重Increment問題の調査のため、読み取り時のIncrementを一時的に無効化
-		// Increment VRAM address using new system - DISABLED FOR DEBUGGING
-		// if ppu.ctrl&CTRL_INCREMENT_MODE != 0 {
-		// 	ppu.vramAddress.Increment(32)
-		// } else {
-		// 	ppu.vramAddress.Increment(1)
-		// }
+		if ppu.ctrl&CTRL_INCREMENT_MODE != 0 {
+			ppu.vramAddress.Increment(32)
+		} else {
+			ppu.vramAddress.Increment(1)
+		}
 
 		// Legacy compatibility
 		ppu.vramAddr = ppu.vramAddress.Get()
