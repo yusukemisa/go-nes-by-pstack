@@ -16,6 +16,10 @@ type Console struct {
 	Bus  *bus.Bus
 	Cart *cartridge.Cartridge
 	dot  uint64
+
+	// OAM DMA halt requested through Bus.TakeOAMDMA.
+	dmaLeft   int
+	dmaQueued bool
 }
 
 func Open(path string) (*Console, error) {
@@ -39,6 +43,9 @@ func Open(path string) (*Console, error) {
 func (c *Console) Reset() {
 	c.CPU.Reset()
 	c.dot = 0
+	c.dmaLeft = 0
+	c.dmaQueued = false
+	c.Bus.TakeOAMDMA()
 }
 
 // PowerOnNestest matches the official nestest automation start state.
@@ -51,30 +58,80 @@ func (c *Console) PowerOnNestest() {
 
 func (c *Console) Clock() {
 	c.PPU.Clock()
+	if c.PPU.NMI() {
+		c.CPU.RequestNMI()
+	}
 	if c.dot%3 == 0 {
-		if c.PPU.NMI() {
-			c.CPU.NMI()
-		}
-		c.CPU.Clock()
+		c.cpuClock()
 	}
 	c.dot++
 }
 
+// cpuClock advances one CPU cycle. NMI is taken only when the previous
+// instruction has finished, and OAM DMA halts the CPU without dropping that
+// instruction. https://www.nesdev.org/wiki/CPU_interrupts
+func (c *Console) cpuClock() {
+	if c.dmaLeft > 0 {
+		c.dmaLeft--
+		c.CPU.AddCycle()
+		return
+	}
+	if _, ok := c.Bus.TakeOAMDMA(); ok {
+		c.dmaQueued = true
+	}
+	if c.CPU.Complete() && c.dmaQueued {
+		c.startOAMDMA()
+		return
+	}
+	c.CPU.ServiceNMI()
+	c.CPU.Clock()
+	if _, ok := c.Bus.TakeOAMDMA(); ok {
+		c.dmaQueued = true
+	}
+}
+
+// startOAMDMA stalls for 513 or 514 CPU cycles after the $4014 write.
+// The write is the store's last cycle. Even GetTotalCycles at the start of
+// that cycle is treated as an APU get cycle (513); odd is a put cycle and
+// needs an alignment cycle (514). Parity is only an approximation of the
+// APU get/put phase, which is random at power-on.
+// https://www.nesdev.org/wiki/DMA
+func (c *Console) startOAMDMA() {
+	writeCycle := c.CPU.GetTotalCycles() - 1
+	n := 513
+	if writeCycle&1 == 1 {
+		n = 514
+	}
+	c.dmaQueued = false
+	c.dmaLeft = n - 1
+	c.CPU.AddCycle()
+}
+
 func (c *Console) StepInstruction() {
 	before := c.CPU.GetTotalCycles()
-	c.CPU.Clock()
-	for !c.CPU.Complete() {
-		c.CPU.Clock()
+	c.cpuClock()
+	for !c.CPU.Complete() || c.dmaLeft > 0 || c.dmaQueued {
+		c.cpuClock()
 	}
 	used := int(c.CPU.GetTotalCycles() - before)
 	for i := 0; i < used*3; i++ {
 		c.PPU.Clock()
+		if c.PPU.NMI() {
+			c.CPU.RequestNMI()
+		}
 	}
+	c.dot += uint64(used) * 3
 }
 
+// StepFrame runs until the PPU signals the end of a frame, from whatever
+// dot the caller is on. A fixed 89342-dot loop would drift once a frame
+// skips a dot. https://www.nesdev.org/wiki/PPU_frame_timing
 func (c *Console) StepFrame() {
-	for i := 0; i < 89342; i++ {
+	for {
 		c.Clock()
+		if c.PPU.FrameComplete() {
+			return
+		}
 	}
 }
 
