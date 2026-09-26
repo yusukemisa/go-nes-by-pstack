@@ -105,41 +105,13 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++ // Skip operand byte
 		cpu.PC++
 
-	// 3-byte unofficial NOP abs,X instructions
-	case 0x1C: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
+	// 3-byte unofficial NOP abs,X. The indexed read crosses a page in readIndexedAddr.
+	case 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC:
 		cpu.PC++
-
-	case 0x3C: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
+		lo := uint16(cpu.Read(cpu.PC))
 		cpu.PC++
-
-	case 0x5C: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
-		cpu.PC++
-
-	case 0x7C: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
-		cpu.PC++
-
-	case 0xDC: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
-		cpu.PC++
-
-	case 0xFC: // *NOP abs,X - Unofficial instruction (3 bytes)
-		// This is an unofficial NOP instruction that reads an absolute indexed address but does nothing
-		cpu.PC++ // Skip low byte
-		cpu.PC++ // Skip high byte
+		hi := uint16(cpu.Read(cpu.PC))
+		cpu.readIndexedAddr((hi<<8)|lo, cpu.X)
 		cpu.PC++
 
 	case 0x20: // JSR abs
@@ -260,7 +232,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		lo := uint16(cpu.Read(cpu.PC))
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
-		addr := ((hi << 8) | lo) + uint16(cpu.X)
+		addr := cpu.readIndexedAddr((hi<<8)|lo, cpu.X)
 		cpu.A = cpu.Read(addr)
 		cpu.SetFlag(Z, cpu.A == 0x00)
 		cpu.SetFlag(N, cpu.A&0x80 != 0)
@@ -272,12 +244,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		cpu.A = cpu.Read(addr)
 		cpu.SetFlag(Z, cpu.A == 0x00)
 		cpu.SetFlag(N, cpu.A&0x80 != 0)
@@ -299,7 +266,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zp := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zp))
 		hi := uint16(cpu.Read((zp + 1) & 0xFF))
-		addr := ((hi << 8) | lo) + uint16(cpu.Y)
+		addr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		cpu.A = cpu.Read(addr)
 		cpu.SetFlag(Z, cpu.A == 0x00)
 		cpu.SetFlag(N, cpu.A&0x80 != 0)
@@ -345,7 +312,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		lo := uint16(cpu.Read(cpu.PC))
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
-		addr := ((hi << 8) | lo) + uint16(cpu.Y)
+		addr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		cpu.X = cpu.Read(addr)
 		cpu.SetFlag(Z, cpu.X == 0x00)
 		cpu.SetFlag(N, cpu.X&0x80 != 0)
@@ -390,7 +357,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		lo := uint16(cpu.Read(cpu.PC))
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
-		addr := ((hi << 8) | lo) + uint16(cpu.X)
+		addr := cpu.readIndexedAddr((hi<<8)|lo, cpu.X)
 		cpu.Y = cpu.Read(addr)
 		cpu.SetFlag(Z, cpu.Y == 0x00)
 		cpu.SetFlag(N, cpu.Y&0x80 != 0)
@@ -606,12 +573,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		temp := uint16(cpu.A) - uint16(value)
 		cpu.SetFlag(C, cpu.A >= value)
@@ -625,12 +587,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		temp := uint16(cpu.A) - uint16(value)
 		cpu.SetFlag(C, cpu.A >= value)
@@ -696,8 +653,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zpAddr := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zpAddr))
 		hi := uint16(cpu.Read((zpAddr + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		cpu.A = cpu.A | value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -709,8 +665,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zpAddr := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zpAddr))
 		hi := uint16(cpu.Read((zpAddr + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		cpu.A = cpu.A & value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -722,8 +677,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zpAddr := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zpAddr))
 		hi := uint16(cpu.Read((zpAddr + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		cpu.A = cpu.A ^ value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -735,8 +689,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zpAddr := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zpAddr))
 		hi := uint16(cpu.Read((zpAddr + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		oldA := cpu.A
 		carry := uint16(0)
@@ -797,12 +750,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A | value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -815,12 +763,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A | value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -845,12 +788,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A & value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -863,12 +801,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A & value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -920,12 +853,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A ^ value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -938,12 +866,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		cpu.A = cpu.A ^ value
 		cpu.SetFlag(Z, cpu.A == 0x00)
@@ -995,8 +918,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zp := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zp))
 		hi := uint16(cpu.Read((zp + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := uint16(cpu.Read(effectiveAddr))
 		temp := uint16(cpu.A) - value
 		cpu.SetFlag(C, cpu.A >= uint8(value))
@@ -1469,12 +1391,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		temp := uint16(cpu.A) + uint16(value) + uint16(cpu.GetFlag(C))
 		cpu.SetFlag(C, temp > 255)
@@ -1490,12 +1407,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		temp := uint16(cpu.A) + uint16(value) + uint16(cpu.GetFlag(C))
 		cpu.SetFlag(C, temp > 255)
@@ -1560,8 +1472,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zp := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zp))
 		hi := uint16(cpu.Read((zp + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		// SBC is implemented as A = A + (~M) + C
 		invValue := uint16(value) ^ 0x00FF
@@ -1644,12 +1555,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.X)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.X)
 		value := cpu.Read(addr)
 		// SBC is implemented as A = A + (~M) + C
 		invValue := uint16(value) ^ 0x00FF
@@ -1669,12 +1575,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
 		baseAddr := (hi << 8) | lo
-		addr := baseAddr + uint16(cpu.Y)
-		// Check for page boundary crossing
-		if (baseAddr & 0xFF00) != (addr & 0xFF00) {
-			// Page crossed, add 1 cycle
-			cpu.totalCycles++
-		}
+		addr := cpu.readIndexedAddr(baseAddr, cpu.Y)
 		value := cpu.Read(addr)
 		// SBC is implemented as A = A + (~M) + C
 		invValue := uint16(value) ^ 0x00FF
@@ -1919,8 +1820,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		zpAddr := uint16(cpu.Read(cpu.PC))
 		lo := uint16(cpu.Read(zpAddr))
 		hi := uint16(cpu.Read((zpAddr + 1) & 0xFF))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		cpu.A = value
 		cpu.X = value
@@ -1944,8 +1844,7 @@ func (cpu *CPU) executeInstructionEnhanced(opcode uint8) {
 		lo := uint16(cpu.Read(cpu.PC))
 		cpu.PC++
 		hi := uint16(cpu.Read(cpu.PC))
-		baseAddr := (hi << 8) | lo
-		effectiveAddr := baseAddr + uint16(cpu.Y)
+		effectiveAddr := cpu.readIndexedAddr((hi<<8)|lo, cpu.Y)
 		value := cpu.Read(effectiveAddr)
 		cpu.A = value
 		cpu.X = value
