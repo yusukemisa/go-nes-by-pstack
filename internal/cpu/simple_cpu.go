@@ -452,6 +452,13 @@ func (cpu *CPU) disassembleInstruction(opcode, byte2, byte3 uint8) string {
 // Override the Clock method to use enhanced execution
 func (cpu *CPU) Clock() {
 	if cpu.cycles == 0 {
+		if cpu.jammed {
+			// STP/JAM never fetches again. One call leaves Complete() true so
+			// Console.StepInstruction cannot spin.
+			// https://www.nesdev.org/wiki/CPU_unofficial_opcodes
+			cpu.AddCycle()
+			return
+		}
 		opcode := cpu.Read(cpu.PC)
 		
 		// Set accurate cycle count for each instruction first
@@ -486,29 +493,39 @@ func (cpu *CPU) Clock() {
 		cpuCycleAfterInstruction := int(cpu.totalCycles)
 		
 		cpu.logInstruction(opcode, ppuCycleForLog, cpuCycleAfterInstruction)
-		
+
+		// Base length is committed before execution so readIndexedAddr can add
+		// a page-cross cycle to this instruction's countdown.
+		cpu.cycles = instructionCycles
 		cpu.executeInstructionEnhanced(opcode)
 		
 		// PLA timing adjustment is handled in logging phase
-		
-		cpu.cycles = instructionCycles
 	}
 	cpu.cycles--
 	cpu.totalCycles++
 }
 
-// getInstructionCycles returns the accurate cycle count for each 6502 instruction
+// getInstructionCycles returns the base cycle count for opcode.
+// Indexed-read page crosses are not included; readIndexedAddr adds those.
 func (cpu *CPU) getInstructionCycles(opcode uint8) uint8 {
-	cycles := baseCycles[opcode]
-	
-	// Check for page boundary crossing for specific instructions
-	if cpu.needsPageCrossingCheck(opcode) {
-		if cpu.willCrossPage(opcode) {
-			cycles++
-		}
+	return baseCycles[opcode]
+}
+
+// readIndexedAddr is the only place an indexed read adds a page-cross cycle.
+// abs,X / abs,Y / (zp),Y reads (LDA, LDX, LDY, EOR, AND, ORA, ADC, SBC, CMP,
+// LAX, LAS, and NOP abs,X) take one extra cycle when base and base+index are in
+// different pages. The extra tick is added to the instruction countdown here;
+// Clock records that same tick in totalCycles, so the two counters stay equal.
+// Stores and RMW already include the indexed fixup in baseCycles and must not
+// call this. A cross does not add a further cycle.
+// https://www.nesdev.org/wiki/Instruction_reference
+// https://www.nesdev.org/wiki/CPU_addressing_modes
+func (cpu *CPU) readIndexedAddr(base uint16, index uint8) uint16 {
+	addr := base + uint16(index)
+	if base&0xFF00 != addr&0xFF00 {
+		cpu.cycles++
 	}
-	
-	return cycles
+	return addr
 }
 
 // baseCycles is the cycle count per opcode before page-crossing extras.
@@ -522,9 +539,9 @@ var baseCycles = [256]uint8{
 	6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 6, // 0x60
 	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x70
 	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0x80
-	2, 6, 2, 2, 4, 4, 4, 4, 2, 5, 2, 2, 2, 5, 2, 2, // 0x90
+	2, 6, 2, 6, 4, 4, 4, 4, 2, 5, 2, 5, 5, 5, 5, 5, // 0x90 $93=6, $9B/$9C/$9E/$9F=5
 	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0xA0
-	2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 2, 4, 4, 4, 4, // 0xB0
+	2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 4, 4, 4, 4, 4, // 0xB0 $BB=4
 	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xC0
 	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0xD0
 	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xE0
@@ -550,54 +567,6 @@ func (cpu *CPU) isBranchInstruction(opcode uint8) bool {
 		}
 	}
 	return false
-}
-
-// needsPageCrossingCheck checks if instruction requires page crossing cycle adjustment
-func (cpu *CPU) needsPageCrossingCheck(opcode uint8) bool {
-	pageCrossingInstructions := []uint8{
-		0xBD, // LDA abs,X
-		0xB9, // LDA abs,Y
-		0xBE, // LDX abs,Y
-		0xBC, // LDY abs,X
-		0xB1, // LDA (zp),Y
-		0x11, // ORA (zp),Y
-		0x31, // AND (zp),Y
-		0x51, // EOR (zp),Y
-		0x71, // ADC (zp),Y
-		0xD1, // CMP (zp),Y
-		0xF1, // SBC (zp),Y
-		// 3-byte unofficial NOP abs,X instructions (page crossing affects cycles)
-		0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC,
-		// LAX (LDA + LDX) - Unofficial instruction variants
-		0xA3, 0xA7, 0xAF, 0xB3, 0xB7, 0xBF,
-	}
-	
-	for _, instr := range pageCrossingInstructions {
-		if opcode == instr {
-			return true
-		}
-	}
-	return false
-}
-
-// willCrossPage checks if the current instruction will cross a page boundary
-func (cpu *CPU) willCrossPage(opcode uint8) bool {
-	var base, index uint16
-	switch opcode {
-	case 0xBD, 0xBC, 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC: // abs,X
-		base = uint16(cpu.Read(cpu.PC+2))<<8 | uint16(cpu.Read(cpu.PC+1))
-		index = uint16(cpu.X)
-	case 0xBE: // abs,Y
-		base = uint16(cpu.Read(cpu.PC+2))<<8 | uint16(cpu.Read(cpu.PC+1))
-		index = uint16(cpu.Y)
-	case 0xB1, 0x11, 0x31, 0x51, 0x71, 0xD1, 0xF1, 0xB3: // (zp),Y
-		zp := uint16(cpu.Read(cpu.PC + 1))
-		base = uint16(cpu.Read((zp+1)&0xFF))<<8 | uint16(cpu.Read(zp))
-		index = uint16(cpu.Y)
-	default:
-		return false
-	}
-	return base&0xFF00 != (base+index)&0xFF00
 }
 
 // Check if branch was taken by comparing PC values

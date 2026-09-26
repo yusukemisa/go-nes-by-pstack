@@ -13,6 +13,10 @@ type Bus struct {
 	apu         *apu.APU
 	controller1 *controller.Controller
 	controller2 *controller.Controller
+
+	// oamDMA is a write to $4014 waiting for the console to stall the CPU.
+	oamDMAPage uint8
+	oamDMA     bool
 }
 
 type PPU interface {
@@ -91,10 +95,14 @@ func (b *Bus) CPUWrite(addr uint16, data uint8) {
 		// APU registers
 		b.apu.Write(addr, data)
 	case addr == 0x4014:
-		// OAM DMA - Transfer 256 bytes from page $XX00-$XXFF to OAM
+		// OAM DMA copies one RAM page immediately. The 513/514-cycle halt is
+		// not applied here; TakeOAMDMA hands that request to the console.
+		// https://www.nesdev.org/wiki/DMA
 		if b.ppu != nil {
 			b.ppu.OAMDMA(data, b.cpu_ram[:])
 		}
+		b.oamDMAPage = data
+		b.oamDMA = true
 	case addr == 0x4015:
 		// APU status register
 		b.apu.Write(addr, data)
@@ -119,6 +127,17 @@ func (b *Bus) GetController1() *controller.Controller {
 
 func (b *Bus) GetController2() *controller.Controller {
 	return b.controller2
+}
+
+// TakeOAMDMA returns the page written to $4014 and consumes the request.
+// The console uses this to halt the CPU; the bus does not reach into it.
+// https://www.nesdev.org/wiki/DMA
+func (b *Bus) TakeOAMDMA() (page uint8, ok bool) {
+	if !b.oamDMA {
+		return 0, false
+	}
+	b.oamDMA = false
+	return b.oamDMAPage, true
 }
 
 // GetPPUCycles returns the current PPU cycle information
