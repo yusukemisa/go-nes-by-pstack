@@ -129,6 +129,11 @@ func (b *Bus) GetController2() *controller.Controller {
 	return b.controller2
 }
 
+// APU returns the APU clocked by the console. The bus does not advance it.
+func (b *Bus) APU() *apu.APU {
+	return b.apu
+}
+
 // TakeOAMDMA returns the page written to $4014 and consumes the request.
 // The console uses this to halt the CPU; the bus does not reach into it.
 // https://www.nesdev.org/wiki/DMA

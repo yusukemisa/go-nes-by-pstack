@@ -69,8 +69,15 @@ func (c *Console) Clock() {
 
 // cpuClock advances one CPU cycle. NMI is taken only when the previous
 // instruction has finished, and OAM DMA halts the CPU without dropping that
-// instruction. https://www.nesdev.org/wiki/CPU_interrupts
+// instruction. The APU is clocked on this cycle too, including while the
+// CPU is halted for DMA. https://www.nesdev.org/wiki/CPU_interrupts
+// https://www.nesdev.org/wiki/APU_Frame_Counter
 func (c *Console) cpuClock() {
+	c.stepCPU()
+	c.Bus.APU().Clock()
+}
+
+func (c *Console) stepCPU() {
 	if c.dmaLeft > 0 {
 		c.dmaLeft--
 		c.CPU.AddCycle()
@@ -83,7 +90,14 @@ func (c *Console) cpuClock() {
 		c.startOAMDMA()
 		return
 	}
-	c.CPU.ServiceNMI()
+	tookNMI := c.CPU.ServiceNMI()
+	// Frame IRQ is level-triggered and polled at the instruction boundary.
+	// I=1 makes CPU.IRQ a no-op. NMI wins when both are pending.
+	// https://www.nesdev.org/wiki/APU_Frame_Counter
+	// https://www.nesdev.org/wiki/CPU_interrupts
+	if !tookNMI && c.CPU.Complete() && c.Bus.APU().FrameIRQ() {
+		c.CPU.IRQ()
+	}
 	c.CPU.Clock()
 	if _, ok := c.Bus.TakeOAMDMA(); ok {
 		c.dmaQueued = true
