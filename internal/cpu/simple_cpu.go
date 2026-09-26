@@ -452,6 +452,13 @@ func (cpu *CPU) disassembleInstruction(opcode, byte2, byte3 uint8) string {
 // Override the Clock method to use enhanced execution
 func (cpu *CPU) Clock() {
 	if cpu.cycles == 0 {
+		if cpu.jammed {
+			// STP/JAM never fetches again. One call leaves Complete() true so
+			// Console.StepInstruction cannot spin.
+			// https://www.nesdev.org/wiki/CPU_unofficial_opcodes
+			cpu.AddCycle()
+			return
+		}
 		opcode := cpu.Read(cpu.PC)
 		
 		// Set accurate cycle count for each instruction first
@@ -506,7 +513,7 @@ func (cpu *CPU) getInstructionCycles(opcode uint8) uint8 {
 
 // readIndexedAddr is the only place an indexed read adds a page-cross cycle.
 // abs,X / abs,Y / (zp),Y reads (LDA, LDX, LDY, EOR, AND, ORA, ADC, SBC, CMP,
-// LAX, and NOP abs,X) take one extra cycle when base and base+index are in
+// LAX, LAS, and NOP abs,X) take one extra cycle when base and base+index are in
 // different pages. The extra tick is added to the instruction countdown here;
 // Clock records that same tick in totalCycles, so the two counters stay equal.
 // Stores and RMW already include the indexed fixup in baseCycles and must not
@@ -532,9 +539,9 @@ var baseCycles = [256]uint8{
 	6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 6, // 0x60
 	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0x70
 	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0x80
-	2, 6, 2, 2, 4, 4, 4, 4, 2, 5, 2, 2, 2, 5, 2, 2, // 0x90
+	2, 6, 2, 6, 4, 4, 4, 4, 2, 5, 2, 5, 5, 5, 5, 5, // 0x90 $93=6, $9B/$9C/$9E/$9F=5
 	2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4, // 0xA0
-	2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 2, 4, 4, 4, 4, // 0xB0
+	2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 4, 4, 4, 4, 4, // 0xB0 $BB=4
 	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xC0
 	2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7, // 0xD0
 	2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6, // 0xE0

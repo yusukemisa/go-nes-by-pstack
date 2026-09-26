@@ -22,6 +22,10 @@ type CPU struct {
 	// https://www.nesdev.org/wiki/CPU_interrupts
 	nmiPending bool
 	nmiDefer   bool
+
+	// jammed is set by STP/JAM. The CPU stops fetching and ignores NMI/IRQ
+	// until Reset. https://www.nesdev.org/wiki/CPU_unofficial_opcodes
+	jammed bool
 }
 
 type Bus interface {
@@ -100,30 +104,32 @@ func (cpu *CPU) Reset() {
 	cpu.totalCycles = 7  // nestest.log baseline
 	cpu.nmiPending = false
 	cpu.nmiDefer = false
+	cpu.jammed = false
 }
 
 func (cpu *CPU) IRQ() {
-	if cpu.GetFlag(I) == 0 {
-		// Push PC and status to stack
-		cpu.Write(0x0100+uint16(cpu.SP), uint8((cpu.PC>>8)&0x00FF))
-		cpu.SP--
-		cpu.Write(0x0100+uint16(cpu.SP), uint8(cpu.PC&0x00FF))
-		cpu.SP--
-
-		cpu.SetFlag(B, false)
-		cpu.SetFlag(U, true)
-		cpu.SetFlag(I, true)
-		cpu.Write(0x0100+uint16(cpu.SP), cpu.Status)
-		cpu.SP--
-
-		// Read IRQ vector
-		addrAbs := uint16(0xFFFE)
-		lo := uint16(cpu.Read(addrAbs))
-		hi := uint16(cpu.Read(addrAbs + 1))
-		cpu.PC = (hi << 8) | lo
-
-		cpu.cycles = 7
+	if cpu.jammed || cpu.GetFlag(I) != 0 {
+		return
 	}
+	// Push PC and status to stack
+	cpu.Write(0x0100+uint16(cpu.SP), uint8((cpu.PC>>8)&0x00FF))
+	cpu.SP--
+	cpu.Write(0x0100+uint16(cpu.SP), uint8(cpu.PC&0x00FF))
+	cpu.SP--
+
+	cpu.SetFlag(B, false)
+	cpu.SetFlag(U, true)
+	cpu.SetFlag(I, true)
+	cpu.Write(0x0100+uint16(cpu.SP), cpu.Status)
+	cpu.SP--
+
+	// Read IRQ vector
+	addrAbs := uint16(0xFFFE)
+	lo := uint16(cpu.Read(addrAbs))
+	hi := uint16(cpu.Read(addrAbs + 1))
+	cpu.PC = (hi << 8) | lo
+
+	cpu.cycles = 7
 }
 
 // RequestNMI latches NMI. It is serviced at an instruction boundary.
@@ -140,7 +146,7 @@ func (cpu *CPU) NMIPending() bool {
 // following boundary runs one instruction before another NMI.
 // https://www.nesdev.org/wiki/CPU_interrupts
 func (cpu *CPU) ServiceNMI() bool {
-	if cpu.cycles != 0 {
+	if cpu.jammed || cpu.cycles != 0 {
 		return false
 	}
 	if cpu.nmiDefer {
@@ -155,6 +161,9 @@ func (cpu *CPU) ServiceNMI() bool {
 }
 
 func (cpu *CPU) NMI() {
+	if cpu.jammed {
+		return
+	}
 	cpu.nmiPending = false
 	cpu.nmiDefer = true
 
@@ -180,7 +189,8 @@ func (cpu *CPU) NMI() {
 	cpu.cycles = 7
 }
 
-// AddCycle counts one CPU cycle without fetching. Used while the CPU is halted.
+// AddCycle counts one CPU cycle without fetching. OAM DMA uses it while the
+// CPU is stalled. STP/JAM uses it so a halted CPU still advances the counter.
 func (cpu *CPU) AddCycle() {
 	cpu.totalCycles++
 }
