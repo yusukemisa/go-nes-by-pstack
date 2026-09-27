@@ -64,7 +64,7 @@ func runWindow(c *nes.Console) error {
 	}
 	defer texture.Destroy()
 
-	pad := c.Bus.GetController1()
+	keys := controller.NewFrameKeys(c.Bus.GetController1())
 	pixels := make([]byte, screenW*screenH*3)
 	for {
 		for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
@@ -77,12 +77,13 @@ func runWindow(c *nes.Console) error {
 					return nil
 				}
 				if button, ok := keyButtons[key]; ok {
-					pad.SetButton(button, e.State == sdl.PRESSED)
+					keys.Key(int(key), button, e.State == sdl.PRESSED)
 				}
 			}
 		}
 
 		c.StepFrame()
+		keys.EndFrame()
 		if err := audio.queue(c.Bus.APU().TakeSamples()); err != nil {
 			return err
 		}
