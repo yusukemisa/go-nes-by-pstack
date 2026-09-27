@@ -1183,16 +1183,20 @@ func (ppu *PPU) clockVisible() {
 				ppu.vramAddr = ppu.vramAddress.Get()
 			}
 		}
-	} else if ppu.dot == 257 {
-		// Horizontal scroll reset at start of HBlank
-		if ppu.renderingEnabled {
-			ppu.vramAddress.ResetX()
-			// Legacy compatibility
-			ppu.vramAddr = ppu.vramAddress.Get()
-		}
 	} else if ppu.dot >= 257 && ppu.dot <= 320 {
-		// Sprite evaluation phase
+		// HBlank starts at dot 257: copy horizontal scroll, then evaluate one
+		// OAM entry per dot through dot 320 (64 sprites). Dot 257 has to be
+		// part of that walk. Skipping it visits 63 entries per line, the
+		// index drifts by 16 per frame, and every fourth frame sprite 0 is
+		// not tested on its scanline. The hit, and a scroll split that waits
+		// on it, then land one scanline later.
+		// https://www.nesdev.org/wiki/PPU_sprite_evaluation
+		// https://www.nesdev.org/wiki/PPU_scrolling
 		if ppu.renderingEnabled {
+			if ppu.dot == 257 {
+				ppu.vramAddress.ResetX()
+				ppu.vramAddr = ppu.vramAddress.Get()
+			}
 			nextScanline := ppu.scanline + 1
 			if nextScanline > 239 {
 				nextScanline = -1 // Wrap to pre-render scanline

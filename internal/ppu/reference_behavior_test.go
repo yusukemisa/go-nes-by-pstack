@@ -160,6 +160,40 @@ func TestSpriteYStartsOnNextScanline(t *testing.T) {
 	}
 }
 
+// TestSprite0OnSameScanlineEveryFrame is the row-flicker regression.
+// Sprite evaluation walks one OAM entry per dot. The window is dots 257–320,
+// which is 64 dots, one per sprite. Leaving dot 257 out of that walk visits
+// 63 entries per line, so the entry index drifts. After a frame it has moved
+// by 16, and every fourth frame sprite 0 is not tested on its scanline. The
+// hit then lands on the next line, and a sprite-0 scroll split moves with it,
+// so a band of rows alternates.
+// https://www.nesdev.org/wiki/PPU_sprite_evaluation
+// https://www.nesdev.org/wiki/PPU_scrolling
+func TestSprite0OnSameScanlineEveryFrame(t *testing.T) {
+	chr := make([]byte, 16*2)
+	chr[16] = 0x80 // tile 1, row 0, leftmost pixel
+
+	p := NewPPU()
+	p.ConnectCartridge(&cartridge.Cartridge{CHRROM: chr, Mirror: 0})
+	hideSprites(p)
+	p.CPUWrite(OAMADDR, 0)
+	p.CPUWrite(OAMDATA, 31) // drawn on scanline 32
+	p.CPUWrite(OAMDATA, 1)
+	p.CPUWrite(OAMDATA, 0)
+	p.CPUWrite(OAMDATA, 0)
+	setPPUAddr(p, 0x3F11)
+	p.CPUWrite(PPUDATA, 0x21)
+	p.CPUWrite(PPUMASK, MASK_RENDER_SPR|MASK_RENDER_SPR_LEFT)
+
+	for frame := 0; frame < 4; frame++ {
+		clockUntil(t, p, 32, 2)
+		if got := p.sprScreen[32][0]; got != 0x21 {
+			t.Fatalf("frame %d scanline 32 pixel = %02X, want 21", frame, got)
+		}
+		clockUntil(t, p, 240, 0)
+	}
+}
+
 func TestSpriteOverflowOnNinthSprite(t *testing.T) {
 	for _, n := range []int{8, 9} {
 		t.Run(string(rune('0'+n)), func(t *testing.T) {
