@@ -16,12 +16,6 @@ const (
 	StatePreRender                  // Scanline 261: pre-render setup
 )
 
-// PendingWrite represents a deferred nametable write for VBlank timing fix
-type PendingWrite struct {
-	addr uint16
-	data uint8
-}
-
 // BackgroundFetcher manages the 8-cycle tile fetching pipeline
 // Implements authentic NES PPU background tile fetching behavior
 type BackgroundFetcher struct {
@@ -415,8 +409,11 @@ func NewSpriteEvaluator() SpriteEvaluator {
 	}
 }
 
-// EvaluateSprites performs sprite evaluation for the next scanline
-// Called during cycles 257-320 of each visible scanline
+// EvaluateSprites performs sprite evaluation for the next scanline.
+// Called during cycles 257-320 of each visible scanline.
+// OAM Y is delayed by one scanline: Y=y is drawn on scanlines y+1 .. y+height.
+// https://www.nesdev.org/wiki/PPU_OAM
+// https://www.nesdev.org/wiki/PPU_sprite_evaluation
 func (se *SpriteEvaluator) EvaluateSprites(ppu *PPU, nextScanline int16) {
 	// Clear secondary OAM at start of evaluation
 	if se.evaluationCycle == 0 {
@@ -428,42 +425,35 @@ func (se *SpriteEvaluator) EvaluateSprites(ppu *PPU, nextScanline int16) {
 		}
 	}
 
-	// Sprite evaluation happens over 64 cycles (257-320)
-	if se.evaluationCycle < 64 && se.spriteCount < 8 {
+	// One primary-OAM entry per cycle across dots 257-320.
+	if se.evaluationCycle < 64 {
 		spriteIndex := se.evaluationCycle
-		if spriteIndex < 64 {
-			// Get sprite Y position from OAM
-			spriteY := ppu.OAM[spriteIndex*4]
+		spriteY := ppu.OAM[spriteIndex*4]
 
-			// Determine sprite height (8x8 or 8x16)
-			spriteHeight := uint8(8)
-			if ppu.ctrl&CTRL_SPRITE_SIZE != 0 {
-				spriteHeight = 16
-			}
+		spriteHeight := uint8(8)
+		if ppu.ctrl&CTRL_SPRITE_SIZE != 0 {
+			spriteHeight = 16
+		}
 
-			// Check if sprite is on next scanline
-			if nextScanline >= int16(spriteY) && nextScanline < int16(spriteY)+int16(spriteHeight) {
-				// Copy sprite to secondary OAM
+		// Hardware draws the sprite one scanline below the stored Y.
+		top := int16(spriteY) + 1
+		if nextScanline >= top && nextScanline < top+int16(spriteHeight) {
+			if se.spriteCount < 8 {
 				baseIndex := se.spriteCount * 4
-				se.secondaryOAM[baseIndex] = ppu.OAM[spriteIndex*4]     // Y
-				se.secondaryOAM[baseIndex+1] = ppu.OAM[spriteIndex*4+1] // Tile
-				se.secondaryOAM[baseIndex+2] = ppu.OAM[spriteIndex*4+2] // Attributes
-				se.secondaryOAM[baseIndex+3] = ppu.OAM[spriteIndex*4+3] // X
-
-				// Track sprite 0
+				se.secondaryOAM[baseIndex] = ppu.OAM[spriteIndex*4]
+				se.secondaryOAM[baseIndex+1] = ppu.OAM[spriteIndex*4+1]
+				se.secondaryOAM[baseIndex+2] = ppu.OAM[spriteIndex*4+2]
+				se.secondaryOAM[baseIndex+3] = ppu.OAM[spriteIndex*4+3]
 				if spriteIndex == 0 {
 					se.sprite0InSecondary = true
 				}
-
 				se.spriteCount++
 				se.secondaryOAMCount = se.spriteCount
+			} else {
+				// A ninth sprite sets overflow. The evaluation bug is not modeled.
+				ppu.status |= STATUS_SPRITE_OVERFLOW
 			}
 		}
-	}
-
-	// Set sprite overflow flag if more than 8 sprites on scanline
-	if se.spriteCount >= 8 {
-		ppu.status |= STATUS_SPRITE_OVERFLOW
 	}
 
 	se.evaluationCycle++
@@ -557,8 +547,8 @@ func (sr *SpriteRenderer) LoadSprites(ppu *PPU, evaluator *SpriteEvaluator, scan
 			}
 		}
 
-		// Calculate fine Y within sprite
-		fineY := uint8(scanline) - spriteY
+		// Pattern row 0 is scanline Y+1. https://www.nesdev.org/wiki/PPU_OAM
+		fineY := uint8(int(scanline) - int(spriteY) - 1)
 
 		// Handle vertical flipping
 		if attributes&0x80 != 0 {
@@ -798,9 +788,6 @@ type PPU struct {
 	
 	// Frame counter for debugging timing issues (Task 9.1.4)
 	frameCount uint64
-	
-	// VBlank timing fix for nametable updates (Task 9.1.4)
-	pendingNametableWrites []PendingWrite
 
 	// Object Attribute Memory (256 bytes, 64 sprites * 4 bytes each)
 	OAM [256]uint8
@@ -999,7 +986,12 @@ func (ppu *PPU) CPUWrite(addr uint16, data uint8) {
 	case OAMADDR:
 		ppu.oamAddr = data
 	case OAMDATA:
+		// Each write stores the byte, then increments OAMADDR.
+		// During rendering, hardware skips the OAM store and only glitches the
+		// high 6 bits of OAMADDR. That glitch is not modeled.
+		// https://www.nesdev.org/wiki/PPU_registers
 		ppu.OAM[ppu.oamAddr] = data
+		ppu.oamAddr++
 	case PPUSCROLL:
 		if !ppu.vramAddress.GetWriteToggle() {
 			// First write - X scroll
@@ -1054,6 +1046,21 @@ func (ppu *PPU) CPUWrite(addr uint16, data uint8) {
 	}
 }
 
+// ciramIndex maps a PPU address in $2000-$3EFF onto the 2 KiB CIRAM.
+// iNES Mirror 0 is horizontal (CIRAM A10 = PPU A11): $2000≡$2400, $2800≡$2C00.
+// Mirror 1 is vertical (CIRAM A10 = PPU A10): $2000≡$2800, $2400≡$2C00.
+// https://www.nesdev.org/wiki/Mirroring
+func (ppu *PPU) ciramIndex(addr uint16) (table int, index int) {
+	addr &= 0x0FFF
+	index = int(addr & 0x03FF)
+	if ppu.cart.Mirror == 0 {
+		table = int((addr >> 11) & 1)
+	} else {
+		table = int((addr >> 10) & 1)
+	}
+	return table, index
+}
+
 func (ppu *PPU) ppuRead(addr uint16) uint8 {
 	addr &= 0x3FFF
 
@@ -1061,52 +1068,9 @@ func (ppu *PPU) ppuRead(addr uint16) uint8 {
 		// Pattern table - read from cartridge
 		return ppu.cart.PPURead(addr)
 	} else if addr >= 0x2000 && addr <= 0x3EFF {
-		// Name table
-		addr &= 0x0FFF
-
-		if ppu.cart.Mirror == 0 { // 垂直ミラーリング
-			if addr >= 0x0000 && addr <= 0x03FF {
-				if addr < 1024 {
-					return ppu.tblName[0][addr]
-				}
-			} else if addr >= 0x0400 && addr <= 0x07FF {
-				index := addr - 0x0400
-				if index < 1024 {
-					return ppu.tblName[1][index]
-				}
-			} else if addr >= 0x0800 && addr <= 0x0BFF {
-				index := addr - 0x0800
-				if index < 1024 {
-					return ppu.tblName[0][index]
-				}
-			} else if addr >= 0x0C00 && addr <= 0x0FFF {
-				index := addr - 0x0C00
-				if index < 1024 {
-					return ppu.tblName[1][index]
-				}
-			}
-		} else { // 水平ミラーリング
-			if addr >= 0x0000 && addr <= 0x03FF {
-				if addr < 1024 {
-					return ppu.tblName[0][addr]
-				}
-			} else if addr >= 0x0400 && addr <= 0x07FF {
-				index := addr - 0x0400
-				if index < 1024 {
-					return ppu.tblName[0][index]
-				}
-			} else if addr >= 0x0800 && addr <= 0x0BFF {
-				index := addr - 0x0800
-				if index < 1024 {
-					return ppu.tblName[1][index]
-				}
-			} else if addr >= 0x0C00 && addr <= 0x0FFF {
-				index := addr - 0x0C00
-				if index < 1024 {
-					return ppu.tblName[1][index]
-				}
-			}
-		}
+		// Name table. https://www.nesdev.org/wiki/Mirroring
+		table, index := ppu.ciramIndex(addr)
+		return ppu.tblName[table][index]
 	} else if addr >= 0x3F00 && addr <= 0x3FFF {
 		// Palette table
 		addr &= 0x001F
@@ -1135,64 +1099,11 @@ func (ppu *PPU) ppuWrite(addr uint16, data uint8) {
 		// Pattern table - write to cartridge
 		ppu.cart.PPUWrite(addr, data)
 	} else if addr >= 0x2000 && addr <= 0x3EFF {
-		// ネームテーブル - 標準的なNESエミュレーション
-		addr &= 0x0FFF
-
-		// Task 9.1.4: VBlank timing fix
-		isRenderingPeriod := (ppu.scanline >= 0 && ppu.scanline <= 239)
-		
-		if isRenderingPeriod {
-			// Buffer the write for VBlank period
-			ppu.pendingNametableWrites = append(ppu.pendingNametableWrites, PendingWrite{
-				addr: addr + 0x2000,
-				data: data,
-			})
-			return // Don't write immediately, defer until VBlank
-		}
-
-		if ppu.cart.Mirror == 0 { // 垂直ミラーリング
-			if addr >= 0x0000 && addr <= 0x03FF {
-				if addr < 1024 {
-					ppu.tblName[0][addr] = data
-				}
-			} else if addr >= 0x0400 && addr <= 0x07FF {
-				index := addr - 0x0400
-				if index < 1024 {
-					ppu.tblName[1][index] = data
-				}
-			} else if addr >= 0x0800 && addr <= 0x0BFF {
-				index := addr - 0x0800
-				if index < 1024 {
-					ppu.tblName[0][index] = data
-				}
-			} else if addr >= 0x0C00 && addr <= 0x0FFF {
-				index := addr - 0x0C00
-				if index < 1024 {
-					ppu.tblName[1][index] = data
-				}
-			}
-		} else { // 水平ミラーリング
-			if addr >= 0x0000 && addr <= 0x03FF {
-				if addr < 1024 {
-					ppu.tblName[0][addr] = data
-				}
-			} else if addr >= 0x0400 && addr <= 0x07FF {
-				index := addr - 0x0400
-				if index < 1024 {
-					ppu.tblName[0][index] = data
-				}
-			} else if addr >= 0x0800 && addr <= 0x0BFF {
-				index := addr - 0x0800
-				if index < 1024 {
-					ppu.tblName[1][index] = data
-				}
-			} else if addr >= 0x0C00 && addr <= 0x0FFF {
-				index := addr - 0x0C00
-				if index < 1024 {
-					ppu.tblName[1][index] = data
-				}
-			}
-		}
+		// Nametable writes update VRAM immediately. Writes during rendering
+		// corrupt the picture on hardware; that corruption is not modeled.
+		// https://www.nesdev.org/wiki/PPU_registers
+		table, index := ppu.ciramIndex(addr)
+		ppu.tblName[table][index] = data
 	} else if addr >= 0x3F00 && addr <= 0x3FFF {
 		// Palette table
 		addr &= 0x001F
@@ -1314,17 +1225,6 @@ func (ppu *PPU) clockVBlank() {
 		ppu.status |= STATUS_VBLANK
 		if ppu.ctrl&CTRL_ENABLE_NMI != 0 {
 			ppu.nmiOccurred = true
-		}
-		
-		// Task 9.1.4: Apply pending nametable writes during VBlank
-		if len(ppu.pendingNametableWrites) > 0 {
-			for _, write := range ppu.pendingNametableWrites {
-				// Apply the deferred write now
-				ppu.applyNametableWrite(write.addr, write.data)
-			}
-			
-			// Clear pending writes
-			ppu.pendingNametableWrites = nil
 		}
 	}
 }
@@ -1933,76 +1833,5 @@ func (ppu *PPU) resetScrollY() {
 	if (ppu.mask & MASK_RENDER_BG) != 0 {
 		// v: IHGF.ED CBA..... = t: IHGF.ED CBA.....
 		ppu.vramAddr = (ppu.vramAddr & 0x841F) | (ppu.tempAddr & 0x7BE0)
-	}
-}
-
-// applyNametableWrite applies a nametable write immediately (used during VBlank)
-func (ppu *PPU) applyNametableWrite(fullAddr uint16, data uint8) {
-	// Handle palette writes (0x3F00-0x3FFF range)
-	if fullAddr >= 0x3F00 && fullAddr <= 0x3FFF {
-		addr := fullAddr & 0x001F
-		if addr == 0x0010 {
-			addr = 0x0000
-		}
-		if addr == 0x0014 {
-			addr = 0x0004
-		}
-		if addr == 0x0018 {
-			addr = 0x0008
-		}
-		if addr == 0x001C {
-			addr = 0x000C
-		}
-		if addr < 32 {
-			ppu.tblPalette[addr] = data
-		}
-		return
-	}
-	
-	// Handle nametable writes (0x2000-0x3EFF range)
-	addr := fullAddr & 0x0FFF
-	
-	if ppu.cart.Mirror == 0 { // 垂直ミラーリング
-		if addr >= 0x0000 && addr <= 0x03FF {
-			if addr < 1024 {
-				ppu.tblName[0][addr] = data
-			}
-		} else if addr >= 0x0400 && addr <= 0x07FF {
-			index := addr - 0x0400
-			if index < 1024 {
-				ppu.tblName[1][index] = data
-			}
-		} else if addr >= 0x0800 && addr <= 0x0BFF {
-			index := addr - 0x0800
-			if index < 1024 {
-				ppu.tblName[0][index] = data
-			}
-		} else if addr >= 0x0C00 && addr <= 0x0FFF {
-			index := addr - 0x0C00
-			if index < 1024 {
-				ppu.tblName[1][index] = data
-			}
-		}
-	} else { // 水平ミラーリング
-		if addr >= 0x0000 && addr <= 0x03FF {
-			if addr < 1024 {
-				ppu.tblName[0][addr] = data
-			}
-		} else if addr >= 0x0400 && addr <= 0x07FF {
-			index := addr - 0x0400
-			if index < 1024 {
-				ppu.tblName[0][index] = data
-			}
-		} else if addr >= 0x0800 && addr <= 0x0BFF {
-			index := addr - 0x0800
-			if index < 1024 {
-				ppu.tblName[1][index] = data
-			}
-		} else if addr >= 0x0C00 && addr <= 0x0FFF {
-			index := addr - 0x0C00
-			if index < 1024 {
-				ppu.tblName[1][index] = data
-			}
-		}
 	}
 }
