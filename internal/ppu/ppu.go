@@ -1205,10 +1205,20 @@ func (ppu *PPU) clockVisible() {
 			}
 		}
 	} else if ppu.dot >= 321 && ppu.dot <= 336 {
-		// Next scanline tile prefetch
+		// Prefetch the first two tiles of the next scanline. The BG shifters
+		// move every dot of this window, same as dots 1-256, so each load
+		// lands in the low byte and the previous tile steps into the high byte.
+		// https://www.nesdev.org/wiki/PPU_rendering
 		if ppu.renderingEnabled {
-			// Background tile fetching for next scanline (but no shifting)
+			ppu.shiftRegisters.Shift()
 			ppu.backgroundFetcher.Clock(ppu)
+			// Coarse X increments at the end of each prefetch tile: dots 328 and 336,
+			// then continues at 8, 16, ... 256 on the next scanline.
+			// https://www.nesdev.org/wiki/PPU_scrolling
+			if (ppu.dot == 328 || ppu.dot == 336) && (ppu.mask & MASK_RENDER_BG) != 0 {
+				ppu.vramAddress.IncrementX()
+				ppu.vramAddr = ppu.vramAddress.Get()
+			}
 		}
 	}
 }
@@ -1275,8 +1285,17 @@ func (ppu *PPU) clockPreRender() {
 			// Legacy compatibility
 			ppu.vramAddr = ppu.vramAddress.Get()
 		} else if ppu.dot >= 321 && ppu.dot <= 336 {
-			// Next scanline tile prefetch (but no shifting)
+			// Same prefetch as a visible scanline, including the shifts that
+			// place the first two tiles before scanline 0. Scanline 0's tiles
+			// are loaded here, on the pre-render line.
+			// https://www.nesdev.org/wiki/PPU_rendering
+			ppu.shiftRegisters.Shift()
 			ppu.backgroundFetcher.Clock(ppu)
+			// https://www.nesdev.org/wiki/PPU_scrolling
+			if (ppu.dot == 328 || ppu.dot == 336) && (ppu.mask & MASK_RENDER_BG) != 0 {
+				ppu.vramAddress.IncrementX()
+				ppu.vramAddr = ppu.vramAddress.Get()
+			}
 		}
 	}
 
