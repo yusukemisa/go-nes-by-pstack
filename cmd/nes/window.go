@@ -34,10 +34,16 @@ var keyButtons = map[sdl.Keycode]uint8{
 }
 
 func runWindow(c *nes.Console) error {
-	if err := sdl.Init(sdl.INIT_VIDEO); err != nil {
+	if err := sdl.Init(sdl.INIT_VIDEO | sdl.INIT_AUDIO); err != nil {
 		return err
 	}
 	defer sdl.Quit()
+
+	audio, err := openAudio()
+	if err != nil {
+		return err
+	}
+	defer audio.Close()
 
 	window, err := sdl.CreateWindow("nes", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED,
 		screenW*scale, screenH*scale, sdl.WINDOW_SHOWN)
@@ -77,6 +83,9 @@ func runWindow(c *nes.Console) error {
 		}
 
 		c.StepFrame()
+		if err := audio.queue(c.Bus.APU().TakeSamples()); err != nil {
+			return err
+		}
 		frameToRGB(c.Frame(), pixels)
 		if err := texture.Update(nil, unsafe.Pointer(&pixels[0]), screenW*3); err != nil {
 			return err

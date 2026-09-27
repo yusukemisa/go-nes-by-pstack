@@ -183,3 +183,156 @@ func TestFourStepFrameIRQAndFiveStepClocks(t *testing.T) {
 		t.Fatalf("5-step second half did not finish the counter (%d)", a.length[0])
 	}
 }
+
+// Duty 2 is the 50% waveform 0 1 1 1 1 0 0 0. Each step lasts t+1 APU
+// cycles, and an APU cycle is every even CPU clock.
+// https://www.nesdev.org/wiki/APU_Pulse
+func TestPulseDutyPattern(t *testing.T) {
+	const period = 8
+	want := []bool{false, true, true, true, true, false, false, false}
+	a := New()
+	a.Write(0x4000, 0xBF) // duty 2, halt, constant volume 15
+	a.Write(0x4002, period)
+	a.Write(0x4015, 0x01)
+	a.Write(0x4003, 0x00) // sequencer restarts at the first step; length loads
+	for i, high := range want {
+		if i > 0 {
+			for c := 0; c < 2*(period+1); c++ {
+				a.Clock()
+			}
+		}
+		got := a.Sample() != 0
+		if got != high {
+			t.Fatalf("step %d high=%v sample=%g", i, got, a.Sample())
+		}
+	}
+}
+
+func TestChannelDisabledBy4015IsSilent(t *testing.T) {
+	t.Run("pulse", func(t *testing.T) {
+		a := audiblePulse()
+		for i := 0; i < 2*9; i++ {
+			a.Clock()
+		}
+		if a.Sample() == 0 {
+			t.Fatal("enabled pulse was silent")
+		}
+		assertDisabledSilent(t, a, 0x00)
+	})
+	t.Run("triangle", func(t *testing.T) {
+		a := New()
+		a.Write(0x4015, 0x04)
+		a.Write(0x4008, 0xFF)
+		a.Write(0x400A, 0xFF)
+		a.Write(0x400B, 0x08)
+		a.Write(0x4017, 0xC0)
+		heard := false
+		for i := 0; i < 16; i++ {
+			a.Clock()
+			if a.Sample() != 0 {
+				heard = true
+				break
+			}
+		}
+		if !heard {
+			t.Fatal("enabled triangle was silent")
+		}
+		assertDisabledSilent(t, a, 0x00)
+	})
+	t.Run("noise", func(t *testing.T) {
+		a := New()
+		a.Write(0x4015, 0x08)
+		a.Write(0x400C, 0x3F)
+		a.Write(0x400E, 0x00)
+		a.Write(0x400F, 0x08)
+		heard := false
+		for i := 0; i < 8; i++ {
+			a.Clock()
+			if a.Sample() != 0 {
+				heard = true
+				break
+			}
+		}
+		if !heard {
+			t.Fatal("enabled noise was silent")
+		}
+		assertDisabledSilent(t, a, 0x00)
+	})
+}
+
+func TestMixerNotIdenticallyZero(t *testing.T) {
+	a := audiblePulse()
+	for i := 0; i < 2*9; i++ {
+		a.Clock()
+	}
+	if a.Sample() == 0 {
+		t.Fatal("enabled pulse mixed to zero")
+	}
+	for i := 0; i < 8000; i++ {
+		a.Clock()
+	}
+	samples := a.TakeSamples()
+	if len(samples) < 150 || len(samples) > 250 {
+		t.Fatalf("sample count %d", len(samples))
+	}
+	for _, s := range samples {
+		if s != 0 {
+			return
+		}
+	}
+	t.Fatal("mixer stream identically zero")
+}
+
+// Period $400 with shift 0 and negate clear targets $800 and must mute.
+// Negate keeps the target from overflowing. https://www.nesdev.org/wiki/APU_Sweep
+func TestSweepOverflowMute(t *testing.T) {
+	audible := func(negate bool) bool {
+		a := New()
+		a.Write(0x4000, 0xBF)
+		if negate {
+			a.Write(0x4001, 0x08)
+		}
+		a.Write(0x4002, 0x00)
+		a.Write(0x4015, 0x01)
+		a.Write(0x4003, 0x04) // timer high bit 2 → period $400
+		for i := 0; i < 2*(0x400+1); i++ {
+			a.Clock()
+		}
+		return a.Sample() != 0
+	}
+	if audible(false) {
+		t.Fatal("period $400 with shift 0 was audible")
+	}
+	if !audible(true) {
+		t.Fatal("negate left period $400 silent")
+	}
+}
+
+func audiblePulse() *APU {
+	a := New()
+	a.Write(0x4000, 0xBF)
+	a.Write(0x4002, 8)
+	a.Write(0x4015, 0x01)
+	a.Write(0x4003, 0x00)
+	return a
+}
+
+func assertDisabledSilent(t *testing.T, a *APU, status uint8) {
+	t.Helper()
+	a.Write(0x4015, status)
+	if a.Sample() != 0 {
+		t.Fatalf("sample %g immediately after disable", a.Sample())
+	}
+	a.TakeSamples()
+	for i := 0; i < 4000; i++ {
+		a.Clock()
+		if a.Sample() != 0 {
+			t.Fatalf("sample %g at clock %d", a.Sample(), i)
+		}
+	}
+	for i, s := range a.TakeSamples() {
+		if s != 0 {
+			t.Fatalf("queued sample %d = %g", i, s)
+		}
+	}
+}
