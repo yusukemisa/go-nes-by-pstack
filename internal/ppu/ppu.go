@@ -1306,22 +1306,22 @@ func (ppu *PPU) clockPreRender() {
 	}
 }
 
-// advanceTiming advances PPU timing and updates state
+// advanceTiming advances PPU timing and updates state.
+// An NTSC frame is 262 scanlines of 341 dots. Scanline 261 is the pre-render
+// line; calling that line -1 does not make it a second scanline. Wrapping 261
+// to -1 clocks pre-render twice, sets FrameComplete twice, and the window
+// presents the same finished buffer twice per frame.
+// https://www.nesdev.org/wiki/PPU_frame_timing
 func (ppu *PPU) advanceTiming() {
 	ppu.dot++
 
-	// End of scanline - advance to next scanline
 	if ppu.dot >= 341 {
 		ppu.dot = 0
 		ppu.scanline++
-
-		// Update state based on scanline
-		ppu.updateState()
-
-		// Handle scanline wraparound
 		if ppu.scanline > 261 {
-			ppu.scanline = -1 // Pre-render scanline is -1
+			ppu.scanline = 0
 		}
+		ppu.updateState()
 	}
 }
 

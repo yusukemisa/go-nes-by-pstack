@@ -272,3 +272,41 @@ func TestStepFrameStopsAtFrameComplete(t *testing.T) {
 		}
 	}
 }
+
+// TestStepFrameIsOneNTSCFrame checks that successive FrameComplete intervals
+// are each one NTSC frame. A second pre-render line makes the intervals
+// 89342, 341, 89342, 341, and the window presents twice per picture.
+func TestStepFrameIsOneNTSCFrame(t *testing.T) {
+	prg := make([]byte, 16384)
+	want := openTiming(t, prg)
+	got := openTiming(t, prg)
+	want.PPU.SetTiming(0, 0)
+	got.PPU.SetTiming(0, 0)
+
+	const frameDots = 341 * 262
+	for frame := 0; frame < 3; frame++ {
+		n := 0
+		completes := 0
+		for {
+			want.Clock()
+			n++
+			if want.PPU.FrameComplete() {
+				completes++
+				break
+			}
+			if n > frameDots {
+				t.Fatalf("frame %d: FrameComplete not set after %d dots", frame, n)
+			}
+		}
+		if completes != 1 || n != frameDots {
+			t.Fatalf("frame %d: %d dots and %d FrameComplete, want %d and 1", frame, n, completes, frameDots)
+		}
+		if want.PPU.GetScanline() != 0 || want.PPU.GetCycle() != 0 {
+			t.Fatalf("frame %d ended at %d,%d, want 0,0", frame, want.PPU.GetScanline(), want.PPU.GetCycle())
+		}
+		got.StepFrame()
+		if got.PPU.GetScanline() != 0 || got.PPU.GetCycle() != 0 {
+			t.Fatalf("frame %d: StepFrame ended at %d,%d, want 0,0", frame, got.PPU.GetScanline(), got.PPU.GetCycle())
+		}
+	}
+}
