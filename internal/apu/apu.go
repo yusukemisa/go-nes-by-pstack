@@ -1,8 +1,9 @@
 package apu
 
-// APU clocks the frame sequencer and the length counters.
-// Waveforms, envelopes, the sweep, the linear counter, and the DMC are not
-// implemented. https://www.nesdev.org/wiki/APU
+// APU clocks the frame sequencer, the length counters, and the audible
+// channels, then emits a mono sample stream. DMC is not implemented; its
+// mixer contribution stays 0, and $4010–$4013 are ignored.
+// https://www.nesdev.org/wiki/APU
 //
 // The frame sequencer is advanced once per CPU cycle. Its steps follow the
 // NTSC table on https://www.nesdev.org/wiki/APU_Frame_Counter : quarter-frame
@@ -17,10 +18,19 @@ package apu
 // "during an APU cycle" and waits 3; odd (PUT) waits 4. Mode 1 generates one
 // quarter-frame and one half-frame clock when that delayed reset happens,
 // not on the write itself and not by waiting for step 2.
+//
+// Pulse and noise timers use that same even-cycle approximation for the APU
+// clock (every second CPU cycle). Triangle timers run on every CPU cycle.
+// Samples are point-sampled at SampleRate against the NTSC CPU clock; the
+// analog high-pass and low-pass filters after the mixer are not modeled.
 type APU struct {
 	length  [4]uint8
 	enabled [4]bool
 	halt    [4]bool
+
+	pulse [2]pulse
+	tri   triangle
+	noise noise
 
 	mode5        bool
 	pendingMode5 bool
@@ -36,7 +46,19 @@ type APU struct {
 
 	quarters int
 	halves   int
+
+	sampleAccum int
+	samples     []float32
 }
+
+// SampleRate is the mono stream rate in hertz. One sample is the mixer
+// output at that instant; cmd/nes queues the stream to SDL.
+const (
+	SampleRate = 44100
+	// ntscCPUHz is 1.789773 MHz. https://www.nesdev.org/wiki/APU_Pulse
+	ntscCPUHz         = 1789773
+	maxPendingSamples = SampleRate
+)
 
 // lengthTable is indexed by bits 7–3 of $4003/$4007/$400B/$400F.
 // https://www.nesdev.org/wiki/APU_Length_Counter
@@ -48,7 +70,12 @@ var lengthTable = [32]uint8{
 }
 
 func New() *APU {
-	return &APU{}
+	a := &APU{}
+	// Pulse 1's sweep negate is ones' complement. https://www.nesdev.org/wiki/APU_Sweep
+	a.pulse[0].complement = true
+	// https://www.nesdev.org/wiki/APU_Noise
+	a.noise.shift = 1
+	return a
 }
 
 // FrameIRQ reports the frame interrupt flag, which is wired to the CPU IRQ
@@ -69,21 +96,47 @@ func (a *APU) Read(addr uint16) uint8 {
 
 func (a *APU) Write(addr uint16, data uint8) {
 	switch addr {
-	case 0x4000:
-		a.halt[0] = data&0x20 != 0
-	case 0x4003:
-		a.loadLength(0, data)
-	case 0x4004:
-		a.halt[1] = data&0x20 != 0
-	case 0x4007:
-		a.loadLength(1, data)
+	case 0x4000, 0x4004:
+		ch := 0
+		if addr == 0x4004 {
+			ch = 1
+		}
+		a.pulse[ch].writeDuty(data)
+		a.halt[ch] = a.pulse[ch].env.loop
+	case 0x4001, 0x4005:
+		ch := 0
+		if addr == 0x4005 {
+			ch = 1
+		}
+		a.pulse[ch].writeSweep(data)
+	case 0x4002, 0x4006:
+		ch := 0
+		if addr == 0x4006 {
+			ch = 1
+		}
+		a.pulse[ch].writeTimerLow(data)
+	case 0x4003, 0x4007:
+		ch := 0
+		if addr == 0x4007 {
+			ch = 1
+		}
+		a.pulse[ch].writeTimerHigh(data)
+		a.loadLength(ch, data)
 	case 0x4008:
+		a.tri.writeLinear(data)
 		a.halt[2] = data&0x80 != 0
+	case 0x400A:
+		a.tri.writeTimerLow(data)
 	case 0x400B:
+		a.tri.writeTimerHigh(data)
 		a.loadLength(2, data)
 	case 0x400C:
-		a.halt[3] = data&0x20 != 0
+		a.noise.env.write(data)
+		a.halt[3] = a.noise.env.loop
+	case 0x400E:
+		a.noise.writePeriod(data)
 	case 0x400F:
+		a.noise.env.start = true
 		a.loadLength(3, data)
 	case 0x4015:
 		a.writeStatus(data)
@@ -157,7 +210,49 @@ func (a *APU) Clock() {
 	default:
 		a.stepSequence()
 	}
+	a.clockChannels()
+	a.emitSample()
 	a.cpuCycle++
+}
+
+// clockChannels advances timers. Even cpuCycle is "during an APU cycle", the
+// same parity already used for the $4017 delay, so pulse and noise tick then.
+// Triangle ticks every CPU cycle. https://www.nesdev.org/wiki/APU_Pulse
+// https://www.nesdev.org/wiki/APU_Triangle
+// https://www.nesdev.org/wiki/APU_Noise
+func (a *APU) clockChannels() {
+	a.tri.clockTimer(a.length[2])
+	if a.cpuCycle&1 == 0 {
+		a.pulse[0].clockTimer()
+		a.pulse[1].clockTimer()
+		a.noise.clockTimer()
+	}
+}
+
+// Sample is the current mixer output, in about [0, 1).
+func (a *APU) Sample() float32 {
+	p := int(a.pulse[0].output(a.length[0])) + int(a.pulse[1].output(a.length[1]))
+	tnd := 3*int(a.tri.output(a.length[2])) + 2*int(a.noise.output(a.length[3]))
+	return pulseTable[p] + tndTable[tnd]
+}
+
+// TakeSamples drains mono samples emitted at SampleRate since the last take.
+func (a *APU) TakeSamples() []float32 {
+	out := a.samples
+	a.samples = nil
+	return out
+}
+
+func (a *APU) emitSample() {
+	a.sampleAccum += SampleRate
+	if a.sampleAccum < ntscCPUHz {
+		return
+	}
+	a.sampleAccum -= ntscCPUHz
+	if len(a.samples) >= maxPendingSamples {
+		return
+	}
+	a.samples = append(a.samples, a.Sample())
 }
 
 func (a *APU) applyReset() {
@@ -201,6 +296,10 @@ func (a *APU) stepSequence() {
 
 func (a *APU) quarter() {
 	a.quarters++
+	a.pulse[0].env.clock()
+	a.pulse[1].env.clock()
+	a.noise.env.clock()
+	a.tri.clockLinear(a.halt[2])
 }
 
 func (a *APU) half() {
@@ -211,4 +310,6 @@ func (a *APU) half() {
 		}
 		a.length[i]--
 	}
+	a.pulse[0].clockSweep()
+	a.pulse[1].clockSweep()
 }
